@@ -1,0 +1,37 @@
+name: Extract Ivideon API documentation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Ivideon API Documentation.pdf"
+      - ".github/workflows/extract-ivideon-pdf.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PDF text extractor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Extract documentation text
+        run: |
+          pdftotext -layout "Ivideon API Documentation.pdf" Ivideon_API_Documentation.txt
+          test -s Ivideon_API_Documentation.txt
+          echo "Extracted $(wc -l < Ivideon_API_Documentation.txt) lines"
+
+      - name: Upload extracted documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: ivideon-api-documentation-text
+          path: Ivideon_API_Documentation.txt
+          if-no-files-found: error
+          retention-days: 7
