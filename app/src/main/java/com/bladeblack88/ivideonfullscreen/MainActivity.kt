@@ -1,11 +1,16 @@
 package com.bladeblack88.ivideonfullscreen
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
@@ -26,7 +31,6 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val CAMERA_ID = "100-y4iXBgzCDn0C8Jv08JcXDr:0"
-        // Ivideon Open API EU endpoint. The API key is supplied at build time.
         private const val API_BASE = "https://openapi-alpha-eu01.ivideon.com"
         private const val RETRY_MS = 7000L
     }
@@ -41,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private var retryJob: Job? = null
     private var statusView: TextView? = null
     private var playerView: PlayerView? = null
+    private var lastError = "Пока ошибок нет."
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,7 +53,7 @@ class MainActivity : AppCompatActivity() {
         enterImmersive()
         showPlayer()
         if (BuildConfig.IVIDEON_API_KEY.isBlank()) {
-            statusView?.text = "API-ключ не добавлен при сборке приложения"
+            showError("API-ключ не добавлен при сборке приложения")
         } else {
             startLive()
         }
@@ -83,10 +88,23 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             textSize = 13f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(8, 4, 8, 4)
+            setPadding(8, 8, 8, 8)
+        }
+        val copyButton = Button(this).apply {
+            text = "Скопировать ошибку"
+            isAllCaps = false
+            setOnClickListener {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Ivideon error", lastError))
+                Toast.makeText(this@MainActivity, "Текст ошибки скопирован", Toast.LENGTH_SHORT).show()
+            }
         }
         root.addView(playerView)
         root.addView(statusView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        root.addView(copyButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -95,7 +113,7 @@ class MainActivity : AppCompatActivity() {
             playerView?.player = exo
             exo.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
-                    statusView?.text = "Связь потеряна. Переподключение…"
+                    showError("Ошибка воспроизведения: ${error.errorCodeName}: ${error.message ?: "без описания"}")
                     scheduleRetry()
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -104,6 +122,11 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
+    }
+
+    private fun showError(message: String) {
+        lastError = message.replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
+        statusView?.text = lastError
     }
 
     private fun startLive() {
@@ -119,7 +142,7 @@ class MainActivity : AppCompatActivity() {
                     playWhenReady = true
                 }
             } catch (e: Exception) {
-                statusView?.text = "Ошибка Ivideon: ${e.message ?: "нет ответа API"}. Повтор…"
+                showError("Ошибка Ivideon: ${e.message ?: "нет ответа API"}")
                 delay(RETRY_MS)
                 if (!isFinishing) startLive()
             }
@@ -147,14 +170,14 @@ class MainActivity : AppCompatActivity() {
         return http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                error("HTTP ${response.code}: ${body.take(220)}")
+                error("HTTP ${response.code}: ${body.take(1200)}")
             }
             val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
             val url = json?.get("url")?.takeIf { it.isJsonPrimitive }?.asString
             url ?: response.request.url.toString().takeIf {
                 it.contains(".m3u8") ||
                     response.header("Content-Type")?.contains("mpegurl", true) == true
-            } ?: error("API не вернул URL видеопотока: ${body.take(180)}")
+            } ?: error("API не вернул URL видеопотока: ${body.take(1200)}")
         }
     }
 
