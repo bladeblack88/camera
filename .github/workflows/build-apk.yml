@@ -24,10 +24,16 @@ jobs:
         with:
           gradle-version: "8.9"
       - name: Diagnose Ivideon API authentication and endpoints
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[ivideon-probe]')
         env:
           IVIDEON_API_KEY: ${{ secrets.IVIDEON_API_KEY }}
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
+          pdftotext -layout "Ivideon API Documentation.pdf" /tmp/ivideon-api.txt
+          echo "=== DOCUMENTED CAMERA/LIVE PREVIEW ENDPOINTS ==="
+          grep -in -C 7 -E 'live_preview|/cameras/\\{Camera.id\\}|Camera.*op=FIND' /tmp/ivideon-api.txt | head -240 || true
+          echo "=== END DOCUMENTATION EXCERPTS ==="
           python3 - <<'PY'
           import json, os, re, urllib.error, urllib.parse, urllib.request
 
