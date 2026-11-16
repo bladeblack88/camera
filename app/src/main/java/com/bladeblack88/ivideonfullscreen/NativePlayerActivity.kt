@@ -227,7 +227,10 @@ class NativePlayerActivity : AppCompatActivity() {
         currentTrackId = fragment.trackId
         val videoTrack = initTrackId
         if (videoTrack != null && fragment.trackId != videoTrack) {
-            show("Пропущен track_ID=${'
+            show("Пропущен track_ID=${fragment.trackId}; видеодорожка init track_ID=$videoTrack")
+            return
+        }
+        if (fragment.samples.isEmpty()) return
         var decoded = 0
         for (sample in fragment.samples) {
             val nals = splitLengthPrefixed(sample) ?: continue
