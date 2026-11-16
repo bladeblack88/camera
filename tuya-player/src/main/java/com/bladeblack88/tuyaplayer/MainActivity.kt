@@ -92,46 +92,73 @@ class MainActivity : AppCompatActivity() {
             try {
                 val capabilities = soap(deviceService, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
                     """<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl"><tds:Category>All</tds:Category></tds:GetCapabilities>""")
-                val mediaElement = findElement(capabilities, "Media")
-                    ?: throw IllegalStateException("Камера не вернула раздел Media в GetCapabilities")
-                val mediaXAddr = findElement(mediaElement, "XAddr")?.textContent?.trim()
-                    ?: throw IllegalStateException("Не найден адрес ONVIF Media service")
-                val profilesXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
-                    """<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>""")
-                val profileNodes = profilesXml.getElementsByTagNameNS("*", "Profiles")
-                val videoProfiles = (0 until profileNodes.length)
-                    .mapNotNull { profileNodes.item(it) as? Element }
-                    .filter { it.getElementsByTagNameNS("*", "VideoEncoderConfiguration").length > 0 }
-                if (videoProfiles.isEmpty()) {
-                    throw IllegalStateException("ONVIF не вернул ни одного профиля с VideoEncoderConfiguration.")
+                // Tuya-модели могут публиковать видео через Media1 или Media2.
+                val services = mutableListOf<Triple<String, String, String>>()
+                findElement(capabilities, "Media")?.let { media ->
+                    val addr = findElement(media, "XAddr")?.textContent?.trim()
+                    if (!addr.isNullOrBlank()) services.add(Triple(
+                        addr,
+                        "http://www.onvif.org/ver10/media/wsdl",
+                        """<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>"""
+                    ))
                 }
+                findElement(capabilities, "Media2")?.let { media ->
+                    val addr = findElement(media, "XAddr")?.textContent?.trim()
+                    if (!addr.isNullOrBlank()) services.add(Triple(
+                        addr,
+                        "http://www.onvif.org/ver20/media/wsdl",
+                        """<tr2:GetProfiles xmlns:tr2="http://www.onvif.org/ver20/media/wsdl"><tr2:Type>All</tr2:Type></tr2:GetProfiles>"""
+                    ))
+                }
+                if (services.isEmpty()) throw IllegalStateException("Камера не объявила Media или Media2 в ONVIF GetCapabilities")
 
-                // Проверяем все видеопрофили: некоторые Tuya-камеры возвращают аудио URI для первого.
                 val uriErrors = mutableListOf<String>()
                 var rawUri: String? = null
-                for (profile in videoProfiles) {
-                    val token = profile.getAttribute("token").takeIf { it.isNotBlank() } ?: continue
+                for ((mediaXAddr, namespace, profilesBody) in services) {
                     try {
-                        val uriXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
-                            """<trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>$token</trt:ProfileToken></trt:GetStreamUri>""")
-                        val candidate = findElement(uriXml, "Uri")?.textContent?.trim()
-                            ?: throw IllegalStateException("пустой URI")
-                        if (candidate.contains("liveaudio", ignoreCase = true)) {
-                            uriErrors.add("$token: получен аудиопоток")
+                        val profilesXml = soap(mediaXAddr, "$namespace/GetProfiles", profilesBody)
+                        val profileNodes = profilesXml.getElementsByTagNameNS("*", "Profiles")
+                        val videoProfiles = (0 until profileNodes.length)
+                            .mapNotNull { profileNodes.item(it) as? Element }
+                            .filter {
+                                it.getElementsByTagNameNS("*", "VideoEncoderConfiguration").length > 0 ||
+                                it.getElementsByTagNameNS("*", "VideoEncoder").length > 0
+                            }
+                        if (videoProfiles.isEmpty()) {
+                            uriErrors.add("${namespace.substringAfter("ver")}: нет видеопрофилей")
                             continue
                         }
-                        if (candidate.startsWith("rtsp://", ignoreCase = true)) {
-                            rawUri = candidate
-                            break
+                        for (profile in videoProfiles) {
+                            val token = profile.getAttribute("token").takeIf { it.isNotBlank() } ?: continue
+                            try {
+                                val uriBody = if (namespace.contains("ver20")) {
+                                    """<tr2:GetStreamUri xmlns:tr2="http://www.onvif.org/ver20/media/wsdl"><tr2:Protocol>RTSP</tr2:Protocol><tr2:ProfileToken>$token</tr2:ProfileToken></tr2:GetStreamUri>"""
+                                } else {
+                                    """<trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>$token</trt:ProfileToken></trt:GetStreamUri>"""
+                                }
+                                val uriXml = soap(mediaXAddr, "$namespace/GetStreamUri", uriBody)
+                                val candidate = findElement(uriXml, "Uri")?.textContent?.trim()
+                                    ?: throw IllegalStateException("пустой URI")
+                                if (candidate.contains("liveaudio", ignoreCase = true)) {
+                                    uriErrors.add("$token: получен аудиопоток")
+                                    continue
+                                }
+                                if (candidate.startsWith("rtsp://", ignoreCase = true)) {
+                                    rawUri = candidate
+                                    break
+                                }
+                                uriErrors.add("$token: неподдерживаемый адрес")
+                            } catch (e: Exception) {
+                                uriErrors.add("$token: ${e.message ?: "ошибка ONVIF"}".take(120))
+                            }
                         }
-                        uriErrors.add("$token: неподдерживаемый адрес")
+                        if (rawUri != null) break
                     } catch (e: Exception) {
-                        uriErrors.add("$token: ${e.message ?: "ошибка ONVIF"}")
+                        uriErrors.add("Media service: ${e.message ?: "ошибка"}".take(140))
                     }
                 }
                 val selectedUri = rawUri ?: throw IllegalStateException(
-                    "Камера вернула аудиоадрес вместо видео для всех ${videoProfiles.size} видеопрофилей. " +
-                    uriErrors.joinToString("; ").take(220)
+                    "Видео-адрес не найден в Media1/Media2. " + uriErrors.joinToString("; ").take(240)
                 )
                 val finalUri = addCredentials(selectedUri)
                 runOnUiThread {
