@@ -182,7 +182,7 @@ class MainActivity : AppCompatActivity() {
                     .take(1200)
                 "APIKey FIND: HTTP " + response.code +
                     (if (response.isSuccessful) " (успех)" else " (ошибка)") +
-                    "\\nОтвет Ivideon:\\n" + safe
+                    "\nОтвет Ivideon:\n" + safe
             }
         } catch (e: Exception) {
             "APIKey FIND: ошибка соединения: " + e.javaClass.simpleName + ": " + (e.message ?: "нет описания")
