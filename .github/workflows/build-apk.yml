@@ -24,7 +24,14 @@ jobs:
         with:
           gradle-version: "8.9"
       - name: Build debug APK
-        run: gradle assembleDebug
+        env:
+          IVIDEON_API_KEY: ${{ secrets.IVIDEON_API_KEY }}
+        run: |
+          if [ -z "$IVIDEON_API_KEY" ]; then
+            echo "GitHub Actions secret IVIDEON_API_KEY is empty or missing"
+            exit 1
+          fi
+          gradle assembleDebug -PivideonApiKey="$IVIDEON_API_KEY"
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
