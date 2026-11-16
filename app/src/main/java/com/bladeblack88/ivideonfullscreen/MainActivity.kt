@@ -133,7 +133,11 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        root.addView(modeButton, LinearLayout.LayoutParams(\n            LinearLayout.LayoutParams.MATCH_PARENT,\n            LinearLayout.LayoutParams.WRAP_CONTENT\n        ))\n        root.addView(copyButton, LinearLayout.LayoutParams(
+        root.addView(modeButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        root.addView(copyButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
