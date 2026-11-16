@@ -17,8 +17,19 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound');
- let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null;
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет';
  function say(s){status.textContent=s;}
+ function inspectMp4(data){
+   try{
+     const v=new DataView(data), out=[]; let p=0;
+     while(p+8<=data.byteLength && out.length<8){
+       let size=v.getUint32(p), type=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7));
+       let header=8; if(size===1){if(p+16>data.byteLength)break; size=Number(v.getBigUint64(p+8));header=16;} else if(size===0)size=data.byteLength-p;
+       out.push(type+':'+size); if(size<header || p+size>data.byteLength)break; p+=size;
+     }
+     return data.byteLength+' bytes ['+out.join(', ')+']';
+   }catch(e){return data.byteLength+' bytes [не удалось разобрать MP4]';}
+ }
  function isCurrent(id, ws, ms){
    return id===session && !stopped && ws===socket && ms===mediaSource;
  }
@@ -39,15 +50,17 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      sourceBuffer=sb;
      sb.mode='segments';
      sb.addEventListener('updateend',()=>{if(isCurrent(id,ws,ms)&&sourceBuffer===sb)drain(id,ws,ms,sb);});
+     sb.addEventListener('error',()=>{if(isCurrent(id,ws,ms)&&sourceBuffer===sb)say('SourceBuffer error; codec='+codecs.join(',')+'; chunk#'+appendCount+' '+lastChunkInfo+'; queued='+queue.length);});
      drain(id,ws,ms,sb);
    }catch(e){if(isCurrent(id,ws,ms))say('Ошибка видеодекодера: '+e.message);}
  }
  function drain(id,ws,ms,sb){
    if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb) || sb.updating || queue.length===0) return;
-   try{sb.appendBuffer(queue.shift());}
+   const chunk=queue.shift(); appendCount++; lastChunkInfo=inspectMp4(chunk);
+   try{sb.appendBuffer(chunk);}
    catch(e){
      if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb)) return;
-     say('Ошибка обработки видеокадра: '+e.message);
+     say('appendBuffer: '+e.name+': '+e.message+'; chunk#'+appendCount+' '+lastChunkInfo);
    }
  }
  function start(url){
@@ -58,7 +71,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    if(oldSocket){try{oldSocket.close();}catch(e){}}
    if(oldSource && oldSource.readyState==='open'){try{oldSource.endOfStream();}catch(e){}}
    if(oldUrl){try{URL.revokeObjectURL(oldUrl);}catch(e){}}
-   stopped=false;
+   stopped=false; appendCount=0; lastChunkInfo='нет';
    const id=session, ms=new MediaSource();
    mediaSource=ms;
    objectUrl=URL.createObjectURL(ms);
