@@ -129,7 +129,8 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  video.addEventListener('error',()=>{
    const e=video.error;
    say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
-     '; readyState='+video.readyState+'; networkState='+video.networkState);
+     '; readyState='+video.readyState+'; networkState='+video.networkState+
+     '; codecs='+codecs.join(',')+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
  });
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
