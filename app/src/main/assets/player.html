@@ -17,6 +17,7 @@ body{position:fixed;inset:0}
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status');
+ video.muted=false; video.volume=1;
  let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto', activeMime='не создан';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
@@ -196,7 +197,13 @@ body{position:fixed;inset:0}
    const initCodec=codecFromInit(initSegment);
    const videoCodecs=selectedCodec==='auto'?(initCodec?[initCodec]:codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'))):[selectedCodec];
    if(!videoCodecs.length) return;
-   const mime='video/mp4; codecs="'+videoCodecs.join(',')+'"'; activeMime=mime;
+   // Ivideon may provide a muxed audio/video init segment. Include its audio codec
+   // in the MSE SourceBuffer so the video element can play both tracks.
+   const initText=String.fromCharCode(...new Uint8Array(initSegment).slice(0, Math.min(initSegment.byteLength, 65536)));
+   const audioCodecs=codecs.filter(c=>/^(mp4a|opus|ac-3|ec-3)/i.test(c));
+   if(audioCodecs.length===0 && initText.includes('mp4a')) audioCodecs.push('mp4a.40.2');
+   const mimeCodecs=[...new Set([...videoCodecs,...audioCodecs])];
+   const mime='video/mp4; codecs="'+mimeCodecs.join(',')+'"'; activeMime=mime;
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
    try{
      const sb=ms.addSourceBuffer(mime);
@@ -255,7 +262,7 @@ body{position:fixed;inset:0}
              initSegment=bytes.buffer;
            }catch(e){streamInitInfo+='; init-decode-error='+e.message;}
          }
-         if(codec && !codecs.includes(codec))codecs.push(codec);
+         if(codec) codec.split(',').map(c=>c.trim()).filter(Boolean).forEach(c=>{if(!codecs.includes(c))codecs.push(c);});
          // Wait for first media fragment to learn its tfhd track_ID.
        }else if(m.type==='error'){
          say('Ошибка Ivideon: '+(m.value||m.message||'поток недоступен'));
