@@ -18,7 +18,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound'), codecPanel=document.getElementById('codecs');
- let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto';
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto', activeMime='не создан';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
    try{
@@ -197,7 +197,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    const initCodec=codecFromInit(initSegment);
    const videoCodecs=selectedCodec==='auto'?(initCodec?[initCodec]:codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'))):[selectedCodec];
    if(!videoCodecs.length) return;
-   const mime='video/mp4; codecs="'+videoCodecs.join(',')+'"';
+   const mime='video/mp4; codecs="'+videoCodecs.join(',')+'"'; activeMime=mime;
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
    try{
      const sb=ms.addSourceBuffer(mime);
@@ -231,7 +231,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    ms.addEventListener('sourceopen',()=>{if(isCurrent(id,ws,ms)){sourceOpen=true;setupSource(id,ws,ms);}});
    say('Проверяю кодек '+(codec==='auto'?'из avcC':codec)+'…');
  }
- const codecChoices=[['Авто','auto'],['H.264 High 3.0','avc1.64001e'],['H.264 High 3.1','avc1.64001f'],['H.264 High 4.0','avc1.640028'],['H.264 High 4.1','avc1.640029'],['H.264 Main 3.0','avc1.4d001e'],['H.264 Main 3.1','avc1.4d001f'],['H.264 Main 4.0','avc1.4d0028'],['H.264 Main 4.1','avc1.4d0029'],['H.264 Baseline 3.0','avc1.42001e'],['H.264 Baseline 3.1','avc1.42001f']];
+ const codecChoices=[['Авто','auto'],['H.264 High 2.2','avc1.640016'],['H.264 High 3.0','avc1.64001e'],['H.264 High 3.1','avc1.64001f'],['H.264 High 4.0','avc1.640028'],['H.264 High 4.1','avc1.640029'],['H.264 Main 3.0','avc1.4d001e'],['H.264 Main 3.1','avc1.4d001f'],['H.264 Main 4.0','avc1.4d0028'],['H.264 Main 4.1','avc1.4d0029'],['H.264 Baseline 3.0','avc1.42001e'],['H.264 Baseline 3.1','avc1.42001f']];
  codecChoices.forEach(([label,codec])=>{const b=document.createElement('button');b.textContent=label;b.dataset.codec=codec;b.addEventListener('click',()=>rebuildForCodec(codec));codecPanel.appendChild(b);});
  function start(url){
    // Invalidate the previous connection before closing it: its late events must be ignored.
@@ -312,7 +312,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    const e=video.error;
    say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
      '; readyState='+video.readyState+'; networkState='+video.networkState+
-     '; codecs='+codecs.join(',')+'; stream-init='+streamInitInfo+'; trackFix='+trackFixInfo+'; fragmentTrackId='+fragmentTrackId+'; initChunk='+initChunkInfo+'; firstMediaChunk='+firstMediaChunkInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
+     '; codecs='+codecs.join(',')+'; selectedCodec='+selectedCodec+'; activeMime='+activeMime+'; stream-init='+streamInitInfo+'; trackFix='+trackFixInfo+'; fragmentTrackId='+fragmentTrackId+'; initChunk='+initChunkInfo+'; firstMediaChunk='+firstMediaChunkInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
  });
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
