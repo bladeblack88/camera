@@ -27,7 +27,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -257,7 +256,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestLiveUrl(config: Config): String {
         val basicRaw = "${config.clientId}:${config.clientSecret}"
-        val basic = Base64.getEncoder().encodeToString(basicRaw.toByteArray(Charsets.UTF_8))
+        val basic = android.util.Base64.encodeToString(basicRaw.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
         val tokenRequest = Request.Builder()
             .url("${config.oauthHost}/auth/oauth/token")
             .header("Authorization", "Basic $basic")
