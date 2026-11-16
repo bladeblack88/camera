@@ -243,7 +243,10 @@ body{position:fixed;inset:0}
    for(let i=0;i<ms.sourceBuffers.length;i++) if(ms.sourceBuffers[i]===sb) return true;
    return false;
  }
- function start(url){
+ function start(url,quality){
+   suggestedQuality=Number.isFinite(Number(quality))?Math.max(0,Math.min(2,Number(quality))):2;
+   slowTicks=0;fastTicks=0;
+   if(qualityMonitor){clearInterval(qualityMonitor);qualityMonitor=null;}
    // Invalidate the previous connection before closing it: its late events must be ignored.
    stopped=true; session++;
    const oldSocket=socket, oldSource=mediaSource, oldUrl=objectUrl;
