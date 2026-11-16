@@ -151,6 +151,64 @@ jobs:
                   call(f"{token_name} POST STREAM Bearer {host}", stream, "POST", token)
                   qurl = stream + "&access_token=" + urllib.parse.quote(token, safe="")
                   call(f"{token_name} POST STREAM query-token {host}", qurl, "POST", token, query_token=True)
+          # Probe the continuous Ivideon WebSocket MP4 stream (not JPEG live_preview).
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pip", "install", "-q", "websocket-client"], check=True)
+          import websocket
+          for host in ("https://openapi-alpha.ivideon.com", BASE):
+              for token_name, token in tokens:
+                  params = urllib.parse.urlencode({
+                      "op": "GET",
+                      "access_token": token,
+                      "q": "2",
+                      "video_codecs": "h264",
+                      "audio_codecs": "aac,mp3,pcma,pcmu,none",
+                      "format": "ws-fmp4",
+                  })
+                  endpoint = host + "/cameras/" + urllib.parse.quote(CAMERA, safe=":") + "/live_stream?" + params
+                  try:
+                      req = urllib.request.Request(endpoint, headers={"Accept": "application/json"})
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          payload = json.loads(response.read().decode("utf-8"))
+                      stream_url = payload.get("result", {}).get("url", "")
+                      print(f"LIVE_STREAM {token_name} {host}: HTTP 200 success={payload.get('success')} message={payload.get('message','')[:120]}")
+                      if not payload.get("success") or not stream_url:
+                          continue
+                      parsed = urllib.parse.urlsplit(stream_url)
+                      print(f"LIVE_STREAM URL: scheme={parsed.scheme} host={parsed.hostname} path={parsed.path}; query hidden")
+                      try:
+                          ws = websocket.create_connection(stream_url, timeout=15, suppress_origin=True)
+                          got_init = False
+                          got_fragment = False
+                          for _ in range(12):
+                              frame = ws.recv()
+                              if isinstance(frame, bytes):
+                                  print(f"LIVE_STREAM WS: binary frame bytes={len(frame)}")
+                                  got_fragment = True
+                                  break
+                              try:
+                                  msg = json.loads(frame)
+                              except Exception:
+                                  print("LIVE_STREAM WS: received non-JSON text frame")
+                                  continue
+                              kind = msg.get("type", "")
+                              print(f"LIVE_STREAM WS: message={kind} codec={msg.get('codec_string','')[:80]}")
+                              if kind == "stream-init":
+                                  got_init = True
+                              if kind == "fragment":
+                                  binary = ws.recv()
+                                  print(f"LIVE_STREAM WS: fragment bytes={len(binary) if isinstance(binary, bytes) else 'unexpected-text'}")
+                                  got_fragment = isinstance(binary, bytes)
+                                  break
+                          print(f"LIVE_STREAM WS RESULT: init={got_init} media_fragment={got_fragment}")
+                          ws.close()
+                      except Exception as e:
+                          print(f"LIVE_STREAM WS CONNECT: {type(e).__name__}: {str(e)[:180]}")
+                  except urllib.error.HTTPError as e:
+                      raw = e.read(1200)
+                      print(f"LIVE_STREAM {token_name} {host}: HTTP {e.code}; body={safe_body(raw, [KEY, token])}")
+                  except Exception as e:
+                      print(f"LIVE_STREAM {token_name} {host}: {type(e).__name__}: {str(e)[:180]}")
           print("DIAG COMPLETE: credentials and token values are not printed.")
           PY
       - name: Build debug APK
