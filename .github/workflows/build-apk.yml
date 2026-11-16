@@ -113,9 +113,17 @@ jobs:
           tokens = [("api-key", KEY)]
           if clone_token:
               tokens.append(("clone-token", clone_token))
+          # Public Ivideon examples use access_token in the query string for JPEG preview.
+          for extra_host in ("https://openapi-alpha.ivideon.com",):
+              if extra_host not in hosts:
+                  hosts.append(extra_host)
+
           for host in hosts:
               for token_name, token in tokens:
                   snap = host + "/cameras/" + camera_path + "/live_preview"
+                  qbase = snap + "?op=GET&q=2&access_token=" + urllib.parse.quote(token, safe="")
+                  call(f"{token_name} GET snapshot query-token {host}", qbase, "GET", token, query_token=True)
+                  call(f"{token_name} GET snapshot query-token no-op {host}", snap + "?q=2&access_token=" + urllib.parse.quote(token, safe=""), "GET", token, query_token=True)
                   call(f"{token_name} GET snapshot op=GET {host}", snap + "?op=GET", "GET", token)
                   call(f"{token_name} GET snapshot no-op {host}", snap, "GET", token)
                   call(f"{token_name} POST snapshot op=GET {host}", snap + "?op=GET", "POST", token)
