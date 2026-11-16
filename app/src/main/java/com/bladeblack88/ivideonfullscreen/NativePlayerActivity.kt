@@ -225,6 +225,587 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun handleFragment(data: ByteArray) {
         val fragment = parseFragment(data) ?: return
         currentTrackId = fragment.trackId
+        val videoTrack = initTrackId
+        if (videoTrack != null && fragment.trackId != videoTrack) {
+            show("Пропущен track_ID=${'
+        var decoded = 0
+        for (sample in fragment.samples) {
+            val nals = splitLengthPrefixed(sample) ?: continue
+            val isIdr = nals.any { it.isNotEmpty() && (it[0].toInt() and 0x1f) == 5 }
+            if (waitingForKeyFrame && !isIdr) continue
+            if (isIdr) waitingForKeyFrame = false
+            maybeStartDecoder()
+            val codec = decoder ?: continue
+            val accessUnit = nals.fold(ByteArray(0)) { acc, nal -> acc + START_CODE + nal }
+            if (accessUnit.isEmpty()) continue
+            val pts = frameIndex * 33_333L
+            val inputIndex = codec.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                val input = codec.getInputBuffer(inputIndex) ?: continue
+                input.clear()
+                if (accessUnit.size > input.remaining()) {
+                    show("Кадр больше входного буфера MediaCodec: ${accessUnit.size} bytes")
+                    continue
+                }
+                input.put(accessUnit)
+                codec.queueInputBuffer(inputIndex, 0, accessUnit.size, pts,
+                    if (isIdr) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                frameIndex++
+                decoded++
+            }
+            drainOutput(codec)
+        }
+        if (decoded > 0) show("Получено кадров: $frameIndex; decoder=${selectedName}; fragment track_ID=${fragment.trackId}; init track_ID=${initTrackId}")
+    }
+
+    private fun drainOutput(codec: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val index = codec.dequeueOutputBuffer(info, 0)
+            if (index >= 0) codec.releaseOutputBuffer(index, true)
+            else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                show("Формат декодера: ${codec.outputFormat}")
+            } else break
+        }
+    }
+
+    private data class ParsedFragment(val trackId: Long, val samples: List<ByteArray>)
+
+    private fun parseFragment(data: ByteArray): ParsedFragment? {
+        var moofStart = -1
+        var moofEnd = -1
+        var mdatStart = -1
+        var mdatEnd = -1
+        var trackId = -1L
+        var sampleSizes = emptyList<Int>()
+        var p = 0
+        while (p + 8 <= data.size) {
+            val size = u32(data, p)
+            val type = fourcc(data, p + 4)
+            if (size < 8 || p + size > data.size) break
+            if (type == "moof") { moofStart = p; moofEnd = p + size }
+            if (type == "mdat") { mdatStart = p + 8; mdatEnd = p + size }
+            p += size
+        }
+        if (moofStart < 0 || mdatStart < 0 || mdatEnd < mdatStart) return null
+        p = moofStart + 8
+        while (p + 8 <= moofEnd) {
+            val size = u32(data, p)
+            val type = fourcc(data, p + 4)
+            if (size < 8 || p + size > moofEnd) break
+            if (type == "traf") {
+                var q = p + 8
+                while (q + 8 <= p + size) {
+                    val n = u32(data, q)
+                    val t = fourcc(data, q + 4)
+                    if (n < 8 || q + n > p + size) break
+                    if (t == "tfhd" && n >= 16) trackId = u32(data, q + 12).toLong()
+                    if (t == "trun" && n >= 16) {
+                        val flags = u24(data, q + 9)
+                        val count = u32(data, q + 12)
+                        var r = q + 16
+                        if ((flags and 1) != 0) r += 4
+                        if ((flags and 4) != 0) r += 4
+                        val sizes = ArrayList<Int>()
+                        repeat(count.coerceAtMost(10000)) {
+                            if ((flags and 0x100) != 0) r += 4
+                            if ((flags and 0x200) != 0) {
+                                if (r + 4 > q + n) return null
+                                sizes.add(u32(data, r)); r += 4
+                            } else return null
+                            if ((flags and 0x400) != 0) r += 4
+                            if ((flags and 0x800) != 0) r += 4
+                            if (r > q + n) return null
+                        }
+                        sampleSizes = sizes
+                    }
+                    q += n
+                }
+            }
+            p += size
+        }
+        if (trackId < 0 || sampleSizes.isEmpty()) return null
+        val total = sampleSizes.sumOf { it.toLong() }
+        if (total != (mdatEnd - mdatStart).toLong()) return null
+        var offset = mdatStart
+        val samples = ArrayList<ByteArray>(sampleSizes.size)
+        for (size in sampleSizes) {
+            if (size < 0 || offset + size > mdatEnd) return null
+            samples.add(data.copyOfRange(offset, offset + size))
+            offset += size
+        }
+        return ParsedFragment(trackId, samples)
+    }
+
+    private fun splitLengthPrefixed(sample: ByteArray): List<ByteArray>? {
+        val result = ArrayList<ByteArray>()
+        var p = 0
+        while (p + 4 <= sample.size) {
+            val n = u32(sample, p)
+            p += 4
+            if (n <= 0 || p + n > sample.size) return null
+            result.add(sample.copyOfRange(p, p + n))
+            p += n
+        }
+        return if (p == sample.size && result.isNotEmpty()) result else null
+    }
+
+    private fun findBoxPayload(data: ByteArray, wanted: String): ByteArray? {
+        var p = 0
+        while (p + 8 <= data.size) {
+            val n = u32(data, p)
+            if (n < 8 || p + n > data.size) break
+            if (fourcc(data, p + 4) == wanted) return data.copyOfRange(p + 8, p + n)
+            p += n
+        }
+        // avcC is nested in stsd/avc1, so scan for its marker as a fallback.
+        for (i in 4 until data.size - 8) {
+            if (fourcc(data, i) == wanted) {
+                val n = u32(data, i - 4)
+                if (n >= 8 && i - 4 + n <= data.size) return data.copyOfRange(i + 4, i - 4 + n)
+            }
+        }
+        return null
+    }
+
+    private class BitReader(private val bytes: ByteArray) {
+        private var bit = 0
+        fun read(n: Int): Int { var v = 0; repeat(n) { v = (v shl 1) or readBit() }; return v }
+        private fun readBit(): Int {
+            if (bit >= bytes.size * 8) return 0
+            val v = (bytes[bit / 8].toInt() shr (7 - bit % 8)) and 1
+            bit++; return v
+        }
+        fun ue(): Int { var zeros = 0; while (readBit() == 0 && zeros < 31) zeros++; return (1 shl zeros) - 1 + if (zeros == 0) 0 else read(zeros) }
+        fun se(): Int { val x = ue(); return if (x % 2 == 0) -(x / 2) else (x + 1) / 2 }
+    }
+
+    private fun parseSpsDimensions(nal: ByteArray): Pair<Int, Int>? = try {
+        val rbsp = ArrayList<Byte>()
+        var zeros = 0
+        for (i in 1 until nal.size) {
+            val b = nal[i]
+            if (zeros >= 2 && b.toInt() == 3) { zeros = 0; continue }
+            rbsp.add(b)
+            zeros = if (b.toInt() == 0) zeros + 1 else 0
+        }
+        val bits = BitReader(rbsp.toByteArray())
+        val profile = bits.read(8); bits.read(8); bits.read(8); bits.ue()
+        var chroma = 1
+        if (profile in listOf(100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135)) {
+            chroma = bits.ue()
+            if (chroma == 3) bits.read(1)
+            bits.ue(); bits.ue(); bits.read(1)
+            if (bits.read(1) == 1) {
+                val count = if (chroma == 3) 12 else 8
+                repeat(count) { if (bits.read(1) == 1) skipScalingList(bits, if (it < 6) 16 else 64) }
+            }
+        }
+        bits.ue()
+        val poc = bits.ue()
+        if (poc == 0) bits.ue() else if (poc == 1) {
+            bits.read(1); bits.se(); bits.se()
+            repeat(bits.ue().coerceAtMost(255)) { bits.se() }
+        }
+        bits.ue(); bits.read(1)
+        val widthMbs = bits.ue() + 1
+        val heightMap = bits.ue() + 1
+        val frameOnly = bits.read(1)
+        if (frameOnly == 0) bits.read(1)
+        bits.read(1)
+        val crop = bits.read(1)
+        var left = 0; var right = 0; var top = 0; var bottom = 0
+        if (crop == 1) { left = bits.ue(); right = bits.ue(); top = bits.ue(); bottom = bits.ue() }
+        val subWidth = if (chroma == 1 || chroma == 2) 2 else 1
+        val subHeight = if (chroma == 1) 2 else 1
+        val cropX = if (chroma == 0) 1 else subWidth
+        val cropY = if (chroma == 0) 2 - frameOnly else subHeight * (2 - frameOnly)
+        val width = widthMbs * 16 - (left + right) * cropX
+        val height = heightMap * 16 * (2 - frameOnly) - (top + bottom) * cropY
+        if (width > 0 && height > 0) width to height else null
+    } catch (_: Exception) { null }
+
+    private fun skipScalingList(bits: BitReader, size: Int) {
+        var last = 8; var next = 8
+        repeat(size) {
+            if (next != 0) next = (last + bits.se() + 256) % 256
+            last = if (next == 0) last else next
+        }
+    }
+
+    private fun u16(b: ByteArray, p: Int) = ((b[p].toInt() and 255) shl 8) or (b[p + 1].toInt() and 255)
+    private fun u24(b: ByteArray, p: Int) = ((b[p].toInt() and 255) shl 16) or ((b[p + 1].toInt() and 255) shl 8) or (b[p + 2].toInt() and 255)
+    private fun u32(b: ByteArray, p: Int): Int =
+        ((b[p].toInt() and 255) shl 24) or ((b[p + 1].toInt() and 255) shl 16) or
+            ((b[p + 2].toInt() and 255) shl 8) or (b[p + 3].toInt() and 255)
+    private fun fourcc(b: ByteArray, p: Int) = String(b, p, 4, Charsets.US_ASCII)
+
+    private fun cloneApiKeyAccess(): String {
+        val findUrl = "$API_BASE/api_keys".toHttpUrlOrNull()!!.newBuilder().addQueryParameter("op", "FIND").build()
+        val find = Request.Builder().url(findUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        val findRaw = http.newCall(find).execute().use {
+            val raw = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("APIKey FIND HTTP ${it.code}")
+            raw
+        }
+        val items = JsonParser.parseString(findRaw).asJsonObject.getAsJsonObject("result").getAsJsonArray("items")
+        val keyId = (0 until items.size()).asSequence().map { items[it] }
+            .firstOrNull { it.isJsonObject && it.asJsonObject.has("id") }?.asJsonObject?.get("id")?.asString
+            ?: error("API key не найден")
+        val cloneUrl = "$API_BASE/api_keys/${android.net.Uri.encode(keyId)}".toHttpUrlOrNull()!!
+            .newBuilder().addQueryParameter("op", "CLONE").build()
+        val clone = Request.Builder().url(cloneUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        val cloneRaw = http.newCall(clone).execute().use {
+            val raw = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("APIKey CLONE HTTP ${it.code}")
+            raw
+        }
+        val root = JsonParser.parseString(cloneRaw)
+        fun findToken(el: com.google.gson.JsonElement): String? {
+            if (el.isJsonObject) {
+                val obj = el.asJsonObject
+                for ((_, v) in obj.entrySet()) {
+                    if (v.isJsonPrimitive && v.asString.startsWith("xtok-")) return v.asString
+                    findToken(v)?.let { return it }
+                }
+            } else if (el.isJsonArray) {
+                el.asJsonArray.forEach { findToken(it)?.let { token -> return token } }
+            }
+            return null
+        }
+        return findToken(root) ?: error("Временный токен не найден")
+    }
+
+    private fun requestLiveStreamUrl(token: String): String {
+        val url = "$API_BASE/cameras/$CAMERA_ID/live_stream".toHttpUrlOrNull()!!.newBuilder()
+            .addQueryParameter("op", "GET").addQueryParameter("access_token", token)
+            .addQueryParameter("q", "2").addQueryParameter("video_codecs", "h264")
+            .addQueryParameter("streams", "image")
+            .addQueryParameter("format", "ws-fmp4").build()
+        val request = Request.Builder().url(url).get().build()
+        val raw = http.newCall(request).execute().use {
+            val body = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("live_stream HTTP ${it.code}")
+            body
+        }
+        return JsonParser.parseString(raw).asJsonObject.getAsJsonObject("result").get("url").asString
+    }
+
+    private fun stopDecoder() {
+        synchronized(codecLock) {
+            try { decoder?.stop() } catch (_: Exception) {}
+            try { decoder?.release() } catch (_: Exception) {}
+            decoder = null
+        }
+    }
+
+    private fun show(message: String) {
+        runOnUiThread { status?.text = message }
+    }
+
+    override fun onDestroy() {
+        socket?.close(1000, "activity closed")
+        socket = null
+        stopDecoder()
+        http.dispatcher.cancelAll()
+        super.onDestroy()
+    }
+}
+}{fragment.trackId}; видеодорожка init track_ID=${'
+        var decoded = 0
+        for (sample in fragment.samples) {
+            val nals = splitLengthPrefixed(sample) ?: continue
+            val isIdr = nals.any { it.isNotEmpty() && (it[0].toInt() and 0x1f) == 5 }
+            if (waitingForKeyFrame && !isIdr) continue
+            if (isIdr) waitingForKeyFrame = false
+            maybeStartDecoder()
+            val codec = decoder ?: continue
+            val accessUnit = nals.fold(ByteArray(0)) { acc, nal -> acc + START_CODE + nal }
+            if (accessUnit.isEmpty()) continue
+            val pts = frameIndex * 33_333L
+            val inputIndex = codec.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                val input = codec.getInputBuffer(inputIndex) ?: continue
+                input.clear()
+                if (accessUnit.size > input.remaining()) {
+                    show("Кадр больше входного буфера MediaCodec: ${accessUnit.size} bytes")
+                    continue
+                }
+                input.put(accessUnit)
+                codec.queueInputBuffer(inputIndex, 0, accessUnit.size, pts,
+                    if (isIdr) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                frameIndex++
+                decoded++
+            }
+            drainOutput(codec)
+        }
+        if (decoded > 0) show("Получено кадров: $frameIndex; decoder=${selectedName}; fragment track_ID=${fragment.trackId}; init track_ID=${initTrackId}")
+    }
+
+    private fun drainOutput(codec: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val index = codec.dequeueOutputBuffer(info, 0)
+            if (index >= 0) codec.releaseOutputBuffer(index, true)
+            else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                show("Формат декодера: ${codec.outputFormat}")
+            } else break
+        }
+    }
+
+    private data class ParsedFragment(val trackId: Long, val samples: List<ByteArray>)
+
+    private fun parseFragment(data: ByteArray): ParsedFragment? {
+        var moofStart = -1
+        var moofEnd = -1
+        var mdatStart = -1
+        var mdatEnd = -1
+        var trackId = -1L
+        var sampleSizes = emptyList<Int>()
+        var p = 0
+        while (p + 8 <= data.size) {
+            val size = u32(data, p)
+            val type = fourcc(data, p + 4)
+            if (size < 8 || p + size > data.size) break
+            if (type == "moof") { moofStart = p; moofEnd = p + size }
+            if (type == "mdat") { mdatStart = p + 8; mdatEnd = p + size }
+            p += size
+        }
+        if (moofStart < 0 || mdatStart < 0 || mdatEnd < mdatStart) return null
+        p = moofStart + 8
+        while (p + 8 <= moofEnd) {
+            val size = u32(data, p)
+            val type = fourcc(data, p + 4)
+            if (size < 8 || p + size > moofEnd) break
+            if (type == "traf") {
+                var q = p + 8
+                while (q + 8 <= p + size) {
+                    val n = u32(data, q)
+                    val t = fourcc(data, q + 4)
+                    if (n < 8 || q + n > p + size) break
+                    if (t == "tfhd" && n >= 16) trackId = u32(data, q + 12).toLong()
+                    if (t == "trun" && n >= 16) {
+                        val flags = u24(data, q + 9)
+                        val count = u32(data, q + 12)
+                        var r = q + 16
+                        if ((flags and 1) != 0) r += 4
+                        if ((flags and 4) != 0) r += 4
+                        val sizes = ArrayList<Int>()
+                        repeat(count.coerceAtMost(10000)) {
+                            if ((flags and 0x100) != 0) r += 4
+                            if ((flags and 0x200) != 0) {
+                                if (r + 4 > q + n) return null
+                                sizes.add(u32(data, r)); r += 4
+                            } else return null
+                            if ((flags and 0x400) != 0) r += 4
+                            if ((flags and 0x800) != 0) r += 4
+                            if (r > q + n) return null
+                        }
+                        sampleSizes = sizes
+                    }
+                    q += n
+                }
+            }
+            p += size
+        }
+        if (trackId < 0 || sampleSizes.isEmpty()) return null
+        val total = sampleSizes.sumOf { it.toLong() }
+        if (total != (mdatEnd - mdatStart).toLong()) return null
+        var offset = mdatStart
+        val samples = ArrayList<ByteArray>(sampleSizes.size)
+        for (size in sampleSizes) {
+            if (size < 0 || offset + size > mdatEnd) return null
+            samples.add(data.copyOfRange(offset, offset + size))
+            offset += size
+        }
+        return ParsedFragment(trackId, samples)
+    }
+
+    private fun splitLengthPrefixed(sample: ByteArray): List<ByteArray>? {
+        val result = ArrayList<ByteArray>()
+        var p = 0
+        while (p + 4 <= sample.size) {
+            val n = u32(sample, p)
+            p += 4
+            if (n <= 0 || p + n > sample.size) return null
+            result.add(sample.copyOfRange(p, p + n))
+            p += n
+        }
+        return if (p == sample.size && result.isNotEmpty()) result else null
+    }
+
+    private fun findBoxPayload(data: ByteArray, wanted: String): ByteArray? {
+        var p = 0
+        while (p + 8 <= data.size) {
+            val n = u32(data, p)
+            if (n < 8 || p + n > data.size) break
+            if (fourcc(data, p + 4) == wanted) return data.copyOfRange(p + 8, p + n)
+            p += n
+        }
+        // avcC is nested in stsd/avc1, so scan for its marker as a fallback.
+        for (i in 4 until data.size - 8) {
+            if (fourcc(data, i) == wanted) {
+                val n = u32(data, i - 4)
+                if (n >= 8 && i - 4 + n <= data.size) return data.copyOfRange(i + 4, i - 4 + n)
+            }
+        }
+        return null
+    }
+
+    private class BitReader(private val bytes: ByteArray) {
+        private var bit = 0
+        fun read(n: Int): Int { var v = 0; repeat(n) { v = (v shl 1) or readBit() }; return v }
+        private fun readBit(): Int {
+            if (bit >= bytes.size * 8) return 0
+            val v = (bytes[bit / 8].toInt() shr (7 - bit % 8)) and 1
+            bit++; return v
+        }
+        fun ue(): Int { var zeros = 0; while (readBit() == 0 && zeros < 31) zeros++; return (1 shl zeros) - 1 + if (zeros == 0) 0 else read(zeros) }
+        fun se(): Int { val x = ue(); return if (x % 2 == 0) -(x / 2) else (x + 1) / 2 }
+    }
+
+    private fun parseSpsDimensions(nal: ByteArray): Pair<Int, Int>? = try {
+        val rbsp = ArrayList<Byte>()
+        var zeros = 0
+        for (i in 1 until nal.size) {
+            val b = nal[i]
+            if (zeros >= 2 && b.toInt() == 3) { zeros = 0; continue }
+            rbsp.add(b)
+            zeros = if (b.toInt() == 0) zeros + 1 else 0
+        }
+        val bits = BitReader(rbsp.toByteArray())
+        val profile = bits.read(8); bits.read(8); bits.read(8); bits.ue()
+        var chroma = 1
+        if (profile in listOf(100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135)) {
+            chroma = bits.ue()
+            if (chroma == 3) bits.read(1)
+            bits.ue(); bits.ue(); bits.read(1)
+            if (bits.read(1) == 1) {
+                val count = if (chroma == 3) 12 else 8
+                repeat(count) { if (bits.read(1) == 1) skipScalingList(bits, if (it < 6) 16 else 64) }
+            }
+        }
+        bits.ue()
+        val poc = bits.ue()
+        if (poc == 0) bits.ue() else if (poc == 1) {
+            bits.read(1); bits.se(); bits.se()
+            repeat(bits.ue().coerceAtMost(255)) { bits.se() }
+        }
+        bits.ue(); bits.read(1)
+        val widthMbs = bits.ue() + 1
+        val heightMap = bits.ue() + 1
+        val frameOnly = bits.read(1)
+        if (frameOnly == 0) bits.read(1)
+        bits.read(1)
+        val crop = bits.read(1)
+        var left = 0; var right = 0; var top = 0; var bottom = 0
+        if (crop == 1) { left = bits.ue(); right = bits.ue(); top = bits.ue(); bottom = bits.ue() }
+        val subWidth = if (chroma == 1 || chroma == 2) 2 else 1
+        val subHeight = if (chroma == 1) 2 else 1
+        val cropX = if (chroma == 0) 1 else subWidth
+        val cropY = if (chroma == 0) 2 - frameOnly else subHeight * (2 - frameOnly)
+        val width = widthMbs * 16 - (left + right) * cropX
+        val height = heightMap * 16 * (2 - frameOnly) - (top + bottom) * cropY
+        if (width > 0 && height > 0) width to height else null
+    } catch (_: Exception) { null }
+
+    private fun skipScalingList(bits: BitReader, size: Int) {
+        var last = 8; var next = 8
+        repeat(size) {
+            if (next != 0) next = (last + bits.se() + 256) % 256
+            last = if (next == 0) last else next
+        }
+    }
+
+    private fun u16(b: ByteArray, p: Int) = ((b[p].toInt() and 255) shl 8) or (b[p + 1].toInt() and 255)
+    private fun u24(b: ByteArray, p: Int) = ((b[p].toInt() and 255) shl 16) or ((b[p + 1].toInt() and 255) shl 8) or (b[p + 2].toInt() and 255)
+    private fun u32(b: ByteArray, p: Int): Int =
+        ((b[p].toInt() and 255) shl 24) or ((b[p + 1].toInt() and 255) shl 16) or
+            ((b[p + 2].toInt() and 255) shl 8) or (b[p + 3].toInt() and 255)
+    private fun fourcc(b: ByteArray, p: Int) = String(b, p, 4, Charsets.US_ASCII)
+
+    private fun cloneApiKeyAccess(): String {
+        val findUrl = "$API_BASE/api_keys".toHttpUrlOrNull()!!.newBuilder().addQueryParameter("op", "FIND").build()
+        val find = Request.Builder().url(findUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        val findRaw = http.newCall(find).execute().use {
+            val raw = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("APIKey FIND HTTP ${it.code}")
+            raw
+        }
+        val items = JsonParser.parseString(findRaw).asJsonObject.getAsJsonObject("result").getAsJsonArray("items")
+        val keyId = (0 until items.size()).asSequence().map { items[it] }
+            .firstOrNull { it.isJsonObject && it.asJsonObject.has("id") }?.asJsonObject?.get("id")?.asString
+            ?: error("API key не найден")
+        val cloneUrl = "$API_BASE/api_keys/${android.net.Uri.encode(keyId)}".toHttpUrlOrNull()!!
+            .newBuilder().addQueryParameter("op", "CLONE").build()
+        val clone = Request.Builder().url(cloneUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        val cloneRaw = http.newCall(clone).execute().use {
+            val raw = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("APIKey CLONE HTTP ${it.code}")
+            raw
+        }
+        val root = JsonParser.parseString(cloneRaw)
+        fun findToken(el: com.google.gson.JsonElement): String? {
+            if (el.isJsonObject) {
+                val obj = el.asJsonObject
+                for ((_, v) in obj.entrySet()) {
+                    if (v.isJsonPrimitive && v.asString.startsWith("xtok-")) return v.asString
+                    findToken(v)?.let { return it }
+                }
+            } else if (el.isJsonArray) {
+                el.asJsonArray.forEach { findToken(it)?.let { token -> return token } }
+            }
+            return null
+        }
+        return findToken(root) ?: error("Временный токен не найден")
+    }
+
+    private fun requestLiveStreamUrl(token: String): String {
+        val url = "$API_BASE/cameras/$CAMERA_ID/live_stream".toHttpUrlOrNull()!!.newBuilder()
+            .addQueryParameter("op", "GET").addQueryParameter("access_token", token)
+            .addQueryParameter("q", "2").addQueryParameter("video_codecs", "h264")
+            .addQueryParameter("streams", "image")
+            .addQueryParameter("format", "ws-fmp4").build()
+        val request = Request.Builder().url(url).get().build()
+        val raw = http.newCall(request).execute().use {
+            val body = it.body?.string().orEmpty()
+            if (!it.isSuccessful) error("live_stream HTTP ${it.code}")
+            body
+        }
+        return JsonParser.parseString(raw).asJsonObject.getAsJsonObject("result").get("url").asString
+    }
+
+    private fun stopDecoder() {
+        synchronized(codecLock) {
+            try { decoder?.stop() } catch (_: Exception) {}
+            try { decoder?.release() } catch (_: Exception) {}
+            decoder = null
+        }
+    }
+
+    private fun show(message: String) {
+        runOnUiThread { status?.text = message }
+    }
+
+    override fun onDestroy() {
+        socket?.close(1000, "activity closed")
+        socket = null
+        stopDecoder()
+        http.dispatcher.cancelAll()
+        super.onDestroy()
+    }
+}
+}videoTrack")
+            return
+        }
         if (fragment.samples.isEmpty()) return
         var decoded = 0
         for (sample in fragment.samples) {
