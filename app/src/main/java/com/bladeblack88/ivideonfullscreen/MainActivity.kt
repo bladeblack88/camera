@@ -9,6 +9,8 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.CookieManager
+import android.webkit.WebStorage
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.gson.JsonElement
@@ -42,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private var pageReady = false
     private var pendingStreamUrl: String? = null
     private var stopping = false
+    private var activeWindow = false
     private var currentQuality = 2
 
     private data class CloneAccess(val token: String)
@@ -50,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        clearAppCache()
         enterImmersive()
 
         val player = WebView(this).apply {
@@ -73,7 +77,6 @@ class MainActivity : AppCompatActivity() {
             showStatus("API-ключ не добавлен при сборке приложения")
         } else {
             player.loadUrl("file:///android_asset/player.html")
-            startPreview()
         }
     }
 
@@ -90,7 +93,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startPreview(quality: Int = currentQuality) {
-        if (stopping || isFinishing) return
+        if (stopping || isFinishing || !activeWindow) return
         currentQuality = quality.coerceIn(0, 2)
         retryJob?.cancel()
         retryJob = lifecycleScope.launch {
@@ -105,7 +108,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 showStatus("Ошибка подключения: " + (e.message ?: "нет ответа Ivideon"))
                 delay(RETRY_MS)
-                if (!stopping && !isFinishing) startPreview()
+                if (!stopping && !isFinishing && activeWindow) startPreview()
             }
         }
     }
@@ -216,10 +219,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scheduleRetry() {
-        if (stopping || isFinishing || retryJob?.isActive == true) return
+        if (stopping || isFinishing || !activeWindow || retryJob?.isActive == true) return
         retryJob = lifecycleScope.launch {
             delay(RETRY_MS)
-            if (!stopping && !isFinishing) startPreview()
+            if (!stopping && !isFinishing && activeWindow) startPreview()
         }
     }
 
@@ -240,9 +243,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun clearAppCache() {
+        cacheDir.deleteRecursively()
+        externalCacheDir?.deleteRecursively()
+        WebStorage.getInstance().deleteAllData()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+    }
+
     override fun onResume() {
         super.onResume()
+        activeWindow = true
         enterImmersive()
+        if (webView != null && !stopping && BuildConfig.IVIDEON_API_KEY.isNotBlank()) {
+            startPreview()
+        }
+    }
+
+    override fun onPause() {
+        activeWindow = false
+        retryJob?.cancel()
+        retryJob = null
+        pendingStreamUrl = null
+        webView?.evaluateJavascript("window.stopIvideonStream && window.stopIvideonStream();", null)
+        http.dispatcher.cancelAll()
+        super.onPause()
     }
 
     override fun onDestroy() {
