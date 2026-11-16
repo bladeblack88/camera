@@ -85,21 +85,22 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    try{const v=new DataView(data);let p=0;while(p+8<=data.byteLength){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7));if(n<8||p+n>data.byteLength)break;if(t==='moof'){let q=p+8;while(q+8<=p+n){let z=v.getUint32(q),u=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7));if(z<8||q+z>p+n)break;if(u==='traf'){let a=q+8;while(a+8<=q+z){let b=v.getUint32(a),w=String.fromCharCode(v.getUint8(a+4),v.getUint8(a+5),v.getUint8(a+6),v.getUint8(a+7));if(b<8||a+b>q+z)break;if(w==='tfhd'&&b>=16)return v.getUint32(a+12);a+=b;}}q+=z;}}p+=n;}}catch(e){}return null;
  }
  function normalizeFragmentSamples(data){
-   // Ivideon fragments contain one raw AVC NAL unit per trun sample,
-   // while ISO BMFF/MSE AVC samples require a length prefix before each NAL.
+   // Ivideon samples already contain 4-byte AVC NAL length prefixes.
+   // Repair only the trun data_offset: when sample sizes exactly cover mdat,
+   // the samples begin immediately after the 8-byte mdat header.
    try{
      const src=new Uint8Array(data), v=new DataView(data);
      let moof=-1, moofSize=0, mdat=-1, mdatSize=0, trun=-1, trunSize=0;
      for(let p=0;p+8<=src.length;){
        let n=v.getUint32(p), t=String.fromCharCode(src[p+4],src[p+5],src[p+6],src[p+7]), h=8;
-       if(n===1){if(p+16>src.length) return data;n=v.getUint32(p+8)*4294967296+v.getUint32(p+12);h=16;}
+       if(n===1){if(p+16>src.length)return data;n=v.getUint32(p+8)*4294967296+v.getUint32(p+12);h=16;}
        else if(n===0)n=src.length-p;
        if(n<h||p+n>src.length)return data;
        if(t==='moof'){moof=p;moofSize=n;}
        if(t==='mdat'){mdat=p;mdatSize=n;}
        p+=n;
      }
-     if(moof<0||mdat<0)return data;
+     if(moof<0||mdat<0||mdat<=moof)return data;
      for(let p=moof+8;p+8<=moof+moofSize;){
        let n=v.getUint32(p),t=String.fromCharCode(src[p+4],src[p+5],src[p+6],src[p+7]);
        if(n<8||p+n>moof+moofSize)break;
@@ -116,51 +117,23 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      }
      if(trun<0)return data;
      const flags=v.getUint32(trun+8)&0xffffff, count=v.getUint32(trun+12);
-     let q=trun+16, dataOffsetPos=-1, dataOffset=0;
-     if(flags&1){dataOffsetPos=q;dataOffset=v.getInt32(q);q+=4;}
+     let q=trun+16, dataOffsetPos=-1;
+     if(flags&1){dataOffsetPos=q;q+=4;}
      if(flags&4)q+=4;
-     const sizePositions=[], sizes=[];
+     let total=0, sizesRead=0;
      for(let i=0;i<count;i++){
        if(flags&0x100)q+=4;
-       if(flags&0x200){if(q+4>trun+trunSize)return data;sizePositions.push(q);sizes.push(v.getUint32(q));q+=4;}
+       if(flags&0x200){if(q+4>trun+trunSize)return data;total+=v.getUint32(q);sizesRead++;q+=4;}
        if(flags&0x400)q+=4;
        if(flags&0x800)q+=4;
      }
-     if(sizePositions.length!==count||dataOffsetPos<0||dataOffset<=0)return data;
-     let payloadStart=moof+dataOffset;
-     const payloadEnd=mdat+mdatSize;
-     const total=sizes.reduce((a,b)=>a+b,0);
-     // Some Ivideon fragments report a trun data_offset that points inside mdat,
-     // even though the trun sample sizes exactly cover the entire mdat payload.
-     // In that unambiguous case, use the actual mdat payload start and repair trun.
-     if(payloadStart<mdat+8||payloadStart+total!==payloadEnd){
-       if(total!==mdatSize-8)return data;
-       payloadStart=mdat+8;
-       dataOffset=payloadStart-moof;
-     }
-     if(payloadStart+total!==payloadEnd)return data;
-     let pos=payloadStart, extra=count*4;
-     // Each sample must begin with a plausible AVC NAL header, not an existing length prefix.
-     for(const size of sizes){
-       if(size<1||((src[pos]&0x80)!==0)||((src[pos]&0x1f)===0)||((src[pos]&0x1f)>23))return data;
-       pos+=size;
-     }
-     const out=new Uint8Array(src.length+extra);
-     out.set(src.subarray(0,payloadStart),0);
-     pos=payloadStart;let dest=payloadStart;
-     for(let i=0;i<count;i++){
-       const size=sizes[i];
-       out[dest]=(size>>>24)&255;out[dest+1]=(size>>>16)&255;out[dest+2]=(size>>>8)&255;out[dest+3]=size&255;
-       out.set(src.subarray(pos,pos+size),dest+4);
-       dest+=size+4;pos+=size;
-       const nv=new DataView(out.buffer);
-       nv.setUint32(sizePositions[i],size+4);
-     }
-     out.set(src.subarray(payloadStart+total),dest);
-     const ov=new DataView(out.buffer);
-     ov.setInt32(dataOffsetPos,dataOffset+extra);
-     // Update mdat and enclosing top-level size; moof itself is unchanged.
-     ov.setUint32(mdat,mdatSize+extra);
+     if(dataOffsetPos<0||sizesRead!==count)return data;
+     // Only repair when all declared samples exactly fill the mdat payload.
+     if(total!==mdatSize-8)return data;
+     const correctOffset=(mdat+8)-moof;
+     if(v.getInt32(dataOffsetPos)===correctOffset)return data;
+     const out=new Uint8Array(src);
+     new DataView(out.buffer).setInt32(dataOffsetPos,correctOffset);
      return out.buffer;
    }catch(e){return data;}
  }
