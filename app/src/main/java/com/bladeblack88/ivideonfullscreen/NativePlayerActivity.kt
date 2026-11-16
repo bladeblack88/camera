@@ -164,9 +164,17 @@ class NativePlayerActivity : AppCompatActivity() {
                     val message = JsonParser.parseString(text).asJsonObject
                     if (message.get("type")?.asString == "stream-init") {
                         val data = message.get("data")?.asString ?: return
-                        parseAvcConfig(android.util.Base64.decode(data, android.util.Base64.DEFAULT))
-                        initTrackId = message.get("track_id")?.asLong
-                        maybeStartDecoder()
+                        val initBytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                        val trackId = message.get("track_id")?.asLong
+                        if (findBoxPayload(initBytes, "avcC") != null) {
+                            parseAvcConfig(initBytes)
+                            initTrackId = trackId
+                            maybeStartDecoder()
+                        } else {
+                            val audioType = listOf("mp4a", "alaw", "ulaw", "Opus")
+                                .firstOrNull { marker -> containsFourcc(initBytes, marker) } ?: "неизвестный"
+                            show("Получен init дополнительной дорожки: track_ID=$trackId, формат=$audioType, ${initBytes.size} байт. Видео-дорожка=${initTrackId ?: "ожидание"}")
+                        }
                     }
                 } catch (e: Exception) {
                     show("Ошибка stream-init: ${e.message}")
@@ -227,7 +235,7 @@ class NativePlayerActivity : AppCompatActivity() {
         currentTrackId = fragment.trackId
         val videoTrack = initTrackId
         if (videoTrack != null && fragment.trackId != videoTrack) {
-            show("Пропущен track_ID=${fragment.trackId}; видеодорожка init track_ID=$videoTrack")
+            show("Обнаружен фрагмент другой дорожки track_ID=${fragment.trackId}; видео track_ID=$videoTrack. Проверяю аудиоформат…")
             return
         }
         if (fragment.samples.isEmpty()) return
@@ -351,6 +359,14 @@ class NativePlayerActivity : AppCompatActivity() {
             p += n
         }
         return if (p == sample.size && result.isNotEmpty()) result else null
+    }
+
+    private fun containsFourcc(data: ByteArray, wanted: String): Boolean {
+        if (wanted.length != 4) return false
+        for (i in 4 until data.size - 3) {
+            if (fourcc(data, i) == wanted) return true
+        }
+        return false
     }
 
     private fun findBoxPayload(data: ByteArray, wanted: String): ByteArray? {
@@ -487,7 +503,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val url = "$API_BASE/cameras/$CAMERA_ID/live_stream".toHttpUrlOrNull()!!.newBuilder()
             .addQueryParameter("op", "GET").addQueryParameter("access_token", token)
             .addQueryParameter("q", "2").addQueryParameter("video_codecs", "h264")
-            .addQueryParameter("streams", "image")
+            .addQueryParameter("streams", "image,sound")
             .addQueryParameter("format", "ws-fmp4").build()
         val request = Request.Builder().url(url).get().build()
         val raw = http.newCall(request).execute().use {
