@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity() {
     private var authModeIndex = 0
     private var modeButton: Button? = null
 
+    private data class CloneAccess(val token: String, val apiHost: String, val api5Host: String, val api4Host: String)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -125,9 +127,19 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { runApiKeyDiagnostic() }
         }
         val cloneButton = Button(this).apply {
-            text = "CLONE: получить временный токен и запустить камеру"
+            text = "CLONE + STREAM (api5_host)"
             isAllCaps = false
-            setOnClickListener { runClonePreview() }
+            setOnClickListener { runClonePreview(false) }
+        }
+        val alternateHostButton = Button(this).apply {
+            text = "CLONE + STREAM (api_host)"
+            isAllCaps = false
+            setOnClickListener { runClonePreview(true) }
+        }
+        val snapshotButton = Button(this).apply {
+            text = "CLONE + GET JPEG snapshot"
+            isAllCaps = false
+            setOnClickListener { runCloneSnapshot() }
         }
         val copyButton = Button(this).apply {
             text = "Скопировать ошибку"
@@ -152,6 +164,14 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         root.addView(cloneButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        root.addView(alternateHostButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        root.addView(snapshotButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -197,7 +217,7 @@ class MainActivity : AppCompatActivity() {
             "APIKey FIND: ошибка соединения: " + e.javaClass.simpleName + ": " + (e.message ?: "нет описания")
         }
     }
-    private fun runClonePreview() {
+    private fun runClonePreview(useApiHost: Boolean) {
         retryJob?.cancel()
         previewSocket?.cancel()
         previewSocket = null
@@ -205,17 +225,18 @@ class MainActivity : AppCompatActivity() {
         statusView?.text = "Получаю APIKey и создаю временный AccessToken…"
         retryJob = lifecycleScope.launch {
             try {
-                val token = withContext(Dispatchers.IO) { cloneApiKeyToken() }
-                statusView?.text = "Временный токен получен. Запрашиваю preview камеры…"
-                val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl(token) }
-                connectPreviewSocket(wsUrl, token)
+                val access = withContext(Dispatchers.IO) { cloneApiKeyAccess() }
+                val selectedHost = if (useApiHost) access.apiHost else access.api5Host
+                statusView?.text = "CLONE готов. STREAM через $selectedHost…"
+                val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl(access.token, selectedHost) }
+                connectPreviewSocket(wsUrl, access.token)
             } catch (e: Exception) {
                 showError("CLONE / preview: ${e.message ?: "нет ответа Ivideon"}")
             }
         }
     }
 
-    private fun cloneApiKeyToken(): String {
+    private fun cloneApiKeyAccess(): CloneAccess {
         val findUrl = "$API_BASE/api_keys".toHttpUrlOrNull()!!.newBuilder()
             .addQueryParameter("op", "FIND").build()
         val findRequest = Request.Builder().url(findUrl)
@@ -247,8 +268,69 @@ class MainActivity : AppCompatActivity() {
             if (!response.isSuccessful) error("CLONE HTTP ${response.code}: ${sanitizeApiText(text)}")
             text
         }
-        return findTokenValue(JsonParser.parseString(cloneRaw))
+        val cloneJson = JsonParser.parseString(cloneRaw)
+        val token = findTokenValue(cloneJson)
             ?: error("CLONE: AccessToken не найден. Ответ: ${sanitizeApiText(cloneRaw)}")
+        val result = cloneJson.asJsonObject.getAsJsonObject("result")
+            ?: error("CLONE: в ответе нет result")
+        fun host(name: String, fallback: String): String {
+            val raw = result.get(name)?.takeIf { it.isJsonPrimitive }?.asString
+            val value = (raw ?: fallback).trim().trimEnd('/')
+            return if (value.startsWith("http://") || value.startsWith("https://")) value else "https://$value"
+        }
+        return CloneAccess(token, host("api_host", API_BASE), host("api5_host", API_BASE), host("api4_host", API_BASE))
+    }
+
+    private fun runCloneSnapshot() {
+        retryJob?.cancel()
+        previewSocket?.cancel()
+        previewSocket = null
+        stopping = false
+        statusView?.text = "CLONE: получаю временный токен для GET snapshot…"
+        retryJob = lifecycleScope.launch {
+            try {
+                val access = withContext(Dispatchers.IO) { cloneApiKeyAccess() }
+                val hosts = listOf(access.api5Host, access.apiHost, access.api4Host).distinct()
+                var lastResult = "Snapshot не получен"
+                var bitmap: android.graphics.Bitmap? = null
+                for (host in hosts) {
+                    val result = withContext(Dispatchers.IO) { requestJpegSnapshot(access.token, host) }
+                    lastResult = host + ": " + result.first
+                    if (result.second != null) {
+                        bitmap = result.second
+                        break
+                    }
+                }
+                if (bitmap != null) {
+                    imageView?.setImageBitmap(bitmap)
+                    statusView?.text = "JPEG snapshot получен. " + lastResult
+                } else {
+                    showError("GET snapshot: " + lastResult)
+                }
+            } catch (e: Exception) {
+                showError("CLONE / GET snapshot: " + (e.message ?: "нет ответа Ivideon"))
+            }
+        }
+    }
+
+    private fun requestJpegSnapshot(token: String, apiHost: String): Pair<String, android.graphics.Bitmap?> {
+        val cameraPath = Uri.encode(CAMERA_ID)
+        val url = "$apiHost/cameras/$cameraPath/live_preview".toHttpUrlOrNull()
+            ?: error("Некорректный адрес snapshot API: $apiHost")
+        val request = Request.Builder().url(url)
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "image/jpeg")
+            .header("Cache-Control", "no-cache")
+            .get().build()
+        return http.newCall(request).execute().use { response ->
+            val bytes = response.body?.bytes() ?: byteArrayOf()
+            if (!response.isSuccessful) {
+                Pair("HTTP " + response.code + ": " + sanitizeApiText(bytes.toString(Charsets.UTF_8)), null)
+            } else {
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                Pair("HTTP " + response.code + ", Content-Type=" + (response.header("Content-Type") ?: "не указан") + ", bytes=" + bytes.size, bitmap)
+            }
+        }
     }
 
     private fun findTokenValue(element: com.google.gson.JsonElement): String? {
@@ -395,12 +477,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun requestPreviewUrl(authToken: String = BuildConfig.IVIDEON_API_KEY): String {
+    private fun requestPreviewUrl(authToken: String = BuildConfig.IVIDEON_API_KEY, apiHost: String = API_BASE): String {
         val cameraPath = Uri.encode(CAMERA_ID)
         val body = """{"fps":$PREVIEW_FPS,"q":$PREVIEW_QUALITY}"""
             .toRequestBody("application/json; charset=utf-8".toMediaType())
         val useApiQueryToken = authModeIndex == 2 || authModeIndex == 3
-        val apiUrlBuilder = "$API_BASE/cameras/$cameraPath/live_preview".toHttpUrlOrNull()?.newBuilder()
+        val apiUrlBuilder = "$apiHost/cameras/$cameraPath/live_preview".toHttpUrlOrNull()?.newBuilder()
             ?: error("Некорректный адрес Ivideon API")
         apiUrlBuilder.addQueryParameter("op", "STREAM")
         if (useApiQueryToken) {
