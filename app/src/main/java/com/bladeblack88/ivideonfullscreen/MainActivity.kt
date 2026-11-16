@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private var pageReady = false
     private var pendingStreamUrl: String? = null
     private var stopping = false
+    private var currentQuality = 2
 
     private data class CloneAccess(val token: String)
 
@@ -88,15 +89,16 @@ class MainActivity : AppCompatActivity() {
             )
     }
 
-    private fun startPreview() {
+    private fun startPreview(quality: Int = currentQuality) {
         if (stopping || isFinishing) return
+        currentQuality = quality.coerceIn(0, 2)
         retryJob?.cancel()
         retryJob = lifecycleScope.launch {
             try {
                 showStatus("Подключение к Ivideon…")
                 val streamUrl = withContext(Dispatchers.IO) {
                     val access = cloneApiKeyAccess()
-                    requestLiveStreamUrl(access.token)
+                    requestLiveStreamUrl(access.token, currentQuality)
                 }
                 pendingStreamUrl = streamUrl
                 if (pageReady) connectInPage(streamUrl)
@@ -146,12 +148,13 @@ class MainActivity : AppCompatActivity() {
         return CloneAccess(token)
     }
 
-    private fun requestLiveStreamUrl(token: String): String {
+    private fun requestLiveStreamUrl(token: String, quality: Int): String {
         val url = "$API_BASE/cameras/$CAMERA_ID/live_stream".toHttpUrlOrNull()!!.newBuilder()
             .addQueryParameter("op", "GET")
             .addQueryParameter("access_token", token)
-            .addQueryParameter("q", "2")
+            .addQueryParameter("q", quality.toString())
             .addQueryParameter("video_codecs", "h264")
+            .addQueryParameter("audio_codecs", "aac,mp3,pcma,pcmu")
             .addQueryParameter("streams", "image")
             .addQueryParameter("format", "ws-fmp4")
             .build()
@@ -225,6 +228,16 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onStreamClosed() {
             runOnUiThread { scheduleRetry() }
+        }
+
+        @JavascriptInterface
+        fun onQualitySuggested(quality: Int) {
+            val requested = quality.coerceIn(0, 2)
+            runOnUiThread {
+                if (!stopping && requested != currentQuality) {
+                    startPreview(requested)
+                }
+            }
         }
     }
 
