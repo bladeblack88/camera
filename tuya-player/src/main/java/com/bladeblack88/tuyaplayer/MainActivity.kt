@@ -99,20 +99,41 @@ class MainActivity : AppCompatActivity() {
                 val profilesXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
                     """<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>""")
                 val profileNodes = profilesXml.getElementsByTagNameNS("*", "Profiles")
-                val profile = (0 until profileNodes.length)
+                val videoProfiles = (0 until profileNodes.length)
                     .mapNotNull { profileNodes.item(it) as? Element }
-                    .firstOrNull { it.getElementsByTagNameNS("*", "VideoEncoderConfiguration").length > 0 }
-                    ?: throw IllegalStateException("ONVIF не вернул профиль с VideoEncoderConfiguration. Получен только аудиопрофиль или камера не публикует видео через ONVIF.")
-                val token = profile.getAttribute("token").takeIf { it.isNotBlank() }
-                    ?: throw IllegalStateException("У видеопрофиля отсутствует token")
-                val uriXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
-                    """<trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>$token</trt:ProfileToken></trt:GetStreamUri>""")
-                val rawUri = findElement(uriXml, "Uri")?.textContent?.trim()
-                    ?: throw IllegalStateException("Камера не вернула RTSP URI")
-                if (rawUri.contains("liveaudio", ignoreCase = true)) {
-                    throw IllegalStateException("Камера снова вернула аудиопоток liveaudio, а не видео. ONVIF Media у этой камеры настроен некорректно.")
+                    .filter { it.getElementsByTagNameNS("*", "VideoEncoderConfiguration").length > 0 }
+                if (videoProfiles.isEmpty()) {
+                    throw IllegalStateException("ONVIF не вернул ни одного профиля с VideoEncoderConfiguration.")
                 }
-                val finalUri = addCredentials(rawUri)
+
+                // Проверяем все видеопрофили: некоторые Tuya-камеры возвращают аудио URI для первого.
+                val uriErrors = mutableListOf<String>()
+                var rawUri: String? = null
+                for (profile in videoProfiles) {
+                    val token = profile.getAttribute("token").takeIf { it.isNotBlank() } ?: continue
+                    try {
+                        val uriXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
+                            """<trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>$token</trt:ProfileToken></trt:GetStreamUri>""")
+                        val candidate = findElement(uriXml, "Uri")?.textContent?.trim()
+                            ?: throw IllegalStateException("пустой URI")
+                        if (candidate.contains("liveaudio", ignoreCase = true)) {
+                            uriErrors.add("$token: получен аудиопоток")
+                            continue
+                        }
+                        if (candidate.startsWith("rtsp://", ignoreCase = true)) {
+                            rawUri = candidate
+                            break
+                        }
+                        uriErrors.add("$token: неподдерживаемый адрес")
+                    } catch (e: Exception) {
+                        uriErrors.add("$token: ${e.message ?: "ошибка ONVIF"}")
+                    }
+                }
+                val selectedUri = rawUri ?: throw IllegalStateException(
+                    "Камера вернула аудиоадрес вместо видео для всех ${videoProfiles.size} видеопрофилей. " +
+                    uriErrors.joinToString("; ").take(220)
+                )
+                val finalUri = addCredentials(selectedUri)
                 runOnUiThread {
                     urlInput.setText(finalUri)
                     status.text = "Адрес видеопотока получен через ONVIF. Нажмите «Подключить камеру»."
