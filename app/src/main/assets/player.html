@@ -19,6 +19,7 @@ body{position:fixed;inset:0}
  const video=document.getElementById('video'), status=document.getElementById('status');
  video.muted=false; video.volume=1;
  let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto', activeMime='не создан';
+ const tracks={audio:null,video:null}; let qualityMonitor=null, slowTicks=0, fastTicks=0, suggestedQuality=2;
  function say(s){status.textContent=s;}
  function inspectMp4(data){
    try{
@@ -80,6 +81,59 @@ body{position:fixed;inset:0}
      }
      return data.byteLength+' bytes ['+summary.join(', ')+']'+extra;
    }catch(e){return data.byteLength+' bytes [MP4 inspect error: '+e.message+']';}
+ }
+ function readInitTrackId(buffer){
+   try{
+     const v=new DataView(buffer);
+     function walk(start,end,depth){
+       for(let p=start;p+8<=end;){
+         let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7)),h=8;
+         if(n===1){if(p+16>end)break;n=v.getUint32(p+8)*4294967296+v.getUint32(p+12);h=16;}else if(n===0)n=end-p;
+         if(n<h||p+n>end)break;
+         if(t==='tkhd'&&n>=h+24){const ver=v.getUint8(p+h),off=p+(ver===1?28:20);if(off+4<=p+n)return v.getUint32(off);}
+         if(['moov','trak','mdia','minf','stbl','mvex','edts','dinf'].includes(t)){const found=walk(p+h,p+n,depth+1);if(found!==null)return found;}
+         p+=n;
+       }return null;
+     }
+     return walk(0,buffer.byteLength,0);
+   }catch(e){return null;}
+ }
+ function trackKind(codec){
+   return /^(mp4a|opus|ac-3|ec-3|alac|samr|sawb)/i.test(codec||'')?'audio':'video';
+ }
+ function setupSource(id,ws,ms){
+   if(!isCurrent(id,ws,ms)||!sourceOpen)return;
+   Object.keys(tracks).forEach(kind=>{
+     const tr=tracks[kind];
+     if(!tr||tr.sb||!tr.init||tr.trackId===null)return;
+     const mime=(kind==='audio'?'audio/mp4':'video/mp4')+'; codecs="'+tr.codec+'"';
+     if(!MediaSource.isTypeSupported(mime)){say('Формат '+kind+' не поддерживается: '+mime);return;}
+     try{
+       const sb=ms.addSourceBuffer(mime);tr.sb=sb;
+       if(kind==='video')sourceBuffer=sb;
+       sb.mode='segments';
+       tr.queue.unshift(tr.init);tr.initQueued=true;
+       sb.addEventListener('updateend',()=>{if(isCurrent(id,ws,ms)&&tr.sb===sb)drainTrack(id,ws,ms,tr);});
+       sb.addEventListener('error',()=>{if(isCurrent(id,ws,ms)&&tr.sb===sb)say('Ошибка '+kind+' SourceBuffer; codec='+tr.codec+'; queued='+tr.queue.length);});
+       drainTrack(id,ws,ms,tr);
+     }catch(e){if(isCurrent(id,ws,ms))say('Ошибка буфера '+kind+': '+e.message);}
+   });
+ }
+ function drainTrack(id,ws,ms,tr){
+   if(!isCurrent(id,ws,ms)||!tr.sb||ms.readyState!=='open'||tr.sb.updating||!tr.queue.length)return;
+   const chunk=tr.queue.shift();
+   try{tr.sb.appendBuffer(chunk);if(tr.kind==='video'){appendCount++;lastChunkInfo=inspectMp4(chunk);if(appendCount===1)initChunkInfo=lastChunkInfo;else if(appendCount===2)firstMediaChunkInfo=lastChunkInfo;}}
+   catch(e){if(isCurrent(id,ws,ms))say('append '+tr.kind+': '+e.name+': '+e.message);}
+ }
+ function monitorQuality(){
+   if(qualityMonitor)clearInterval(qualityMonitor);
+   qualityMonitor=setInterval(()=>{
+     if(stopped||!mediaSource||!sourceBuffer||!video.buffered||video.buffered.length===0)return;
+     let ahead=0;try{const end=video.buffered.end(video.buffered.length-1);if(end>=video.currentTime)ahead=end-video.currentTime;}catch(e){}
+     if(ahead<0.65){slowTicks++;fastTicks=0;}else if(ahead>5){fastTicks++;slowTicks=0;}else{slowTicks=Math.max(0,slowTicks-1);fastTicks=0;}
+     if(slowTicks>=4&&suggestedQuality>0){suggestedQuality--;slowTicks=0;if(window.Android&&Android.onQualitySuggested)Android.onQualitySuggested(suggestedQuality);}
+     else if(fastTicks>=18&&suggestedQuality<2){suggestedQuality++;fastTicks=0;if(window.Android&&Android.onQualitySuggested)Android.onQualitySuggested(suggestedQuality);}
+   },1500);
  }
  function readFragmentTrackId(data){
    try{const v=new DataView(data);let p=0;while(p+8<=data.byteLength){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7));if(n<8||p+n>data.byteLength)break;if(t==='moof'){let q=p+8;while(q+8<=p+n){let z=v.getUint32(q),u=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7));if(z<8||q+z>p+n)break;if(u==='traf'){let a=q+8;while(a+8<=q+z){let b=v.getUint32(a),w=String.fromCharCode(v.getUint8(a+4),v.getUint8(a+5),v.getUint8(a+6),v.getUint8(a+7));if(b<8||a+b>q+z)break;if(w==='tfhd'&&b>=16)return v.getUint32(a+12);a+=b;}}q+=z;}}p+=n;}}catch(e){}return null;
@@ -189,62 +243,22 @@ body{position:fixed;inset:0}
    for(let i=0;i<ms.sourceBuffers.length;i++) if(ms.sourceBuffers[i]===sb) return true;
    return false;
  }
- function setupSource(id, ws, ms){
-   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment || fragmentTrackId===null) return;
-   // The supplied Ivideon init segment currently describes a video (vide) track only.
-   // The stream-init codec string can disagree with the actual avcC configuration.
-   // MSE must be told the profile/compatibility/level declared by the init segment.
-   const initCodec=codecFromInit(initSegment);
-   const videoCodecs=selectedCodec==='auto'?(initCodec?[initCodec]:codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'))):[selectedCodec];
-   if(!videoCodecs.length) return;
-   // Ivideon may provide a muxed audio/video init segment. Include its audio codec
-   // in the MSE SourceBuffer so the video element can play both tracks.
-   const initBytes=new Uint8Array(initSegment);
-   let hasMp4a=false;
-   for(let i=4;i+4<=initBytes.length;i++){
-     if(initBytes[i]===0x6d&&initBytes[i+1]===0x70&&initBytes[i+2]===0x34&&initBytes[i+3]===0x61){hasMp4a=true;break;}
-   }
-   const audioCodecs=codecs.filter(c=>/^(mp4a|opus|ac-3|ec-3)/i.test(c));
-   if(audioCodecs.length===0 && hasMp4a) audioCodecs.push('mp4a.40.2');
-   const mimeCodecs=[...new Set([...videoCodecs,...audioCodecs])];
-   const mime='video/mp4; codecs="'+mimeCodecs.join(',')+'"'; activeMime=mime;
-   if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
-   try{
-     const sb=ms.addSourceBuffer(mime);
-     if(!isCurrent(id,ws,ms)){try{ms.removeSourceBuffer(sb);}catch(e){}return;}
-     sourceBuffer=sb;
-     sb.mode='segments';
-     if(!initQueued){queue.unshift(initSegment);initQueued=true;}
-     sb.addEventListener('updateend',()=>{if(isCurrent(id,ws,ms)&&sourceBuffer===sb)drain(id,ws,ms,sb);});
-     sb.addEventListener('error',()=>{if(isCurrent(id,ws,ms)&&sourceBuffer===sb)say('SourceBuffer error; codec='+codecs.join(',')+'; chunk#'+appendCount+' '+lastChunkInfo+'; queued='+queue.length);});
-     drain(id,ws,ms,sb);
-   }catch(e){if(isCurrent(id,ws,ms))say('Ошибка видеодекодера: '+e.message);}
- }
- function drain(id,ws,ms,sb){
-   if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb) || sb.updating || queue.length===0) return;
-   const chunk=queue.shift(); appendCount++; lastChunkInfo=inspectMp4(chunk); if(appendCount===1)initChunkInfo=lastChunkInfo; else if(appendCount===2)firstMediaChunkInfo=lastChunkInfo;
-   try{sb.appendBuffer(chunk);}
-   catch(e){
-     if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb)) return;
-     say('appendBuffer: '+e.name+': '+e.message+'; chunk#'+appendCount+' '+lastChunkInfo);
-   }
- }
  function start(url){
    // Invalidate the previous connection before closing it: its late events must be ignored.
    stopped=true; session++;
    const oldSocket=socket, oldSource=mediaSource, oldUrl=objectUrl;
-   socket=null; mediaSource=null; sourceBuffer=null; queue=[]; codecs=[]; sourceOpen=false;
+   socket=null; mediaSource=null; sourceBuffer=null; queue=[]; tracks.audio=null;tracks.video=null;codecs=[]; sourceOpen=false;
    if(oldSocket){try{oldSocket.close();}catch(e){}}
    if(oldSource && oldSource.readyState==='open'){try{oldSource.endOfStream();}catch(e){}}
    if(oldUrl){try{URL.revokeObjectURL(oldUrl);}catch(e){}}
-   stopped=false; history=[]; appendCount=0; lastChunkInfo='нет'; initChunkInfo='нет'; firstMediaChunkInfo='нет'; streamInitInfo='не получен'; initSegment=null; initQueued=false;
+   stopped=false; history=[]; tracks.audio=null;tracks.video=null;sourceBuffer=null;queue=[];appendCount=0; lastChunkInfo='нет'; initChunkInfo='нет'; firstMediaChunkInfo='нет'; streamInitInfo='не получен'; initSegment=null; initQueued=false;
    const id=session, ms=new MediaSource();
    mediaSource=ms;
    objectUrl=URL.createObjectURL(ms);
    video.src=objectUrl;
    ms.addEventListener('sourceopen',()=>{
      if(id!==session || stopped || mediaSource!==ms) return;
-     sourceOpen=true; setupSource(id,socket,ms);
+     sourceOpen=true; setupSource(id,socket,ms); monitorQuality();
    });
    let ws;
    try{ws=new WebSocket(url);ws.binaryType='arraybuffer';socket=ws;}
@@ -263,11 +277,16 @@ body{position:fixed;inset:0}
            try{
              const binary=atob(m.data), bytes=new Uint8Array(binary.length);
              for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
-             initSegment=bytes.buffer;
+             const init=bytes.buffer, codecList=(codec||'').split(',').map(c=>c.trim()).filter(Boolean);
+             codecList.forEach(c=>{if(!codecs.includes(c))codecs.push(c);});
+             const c=codecList[0]||codecFromInit(init)||'';
+             const kind=trackKind(c), trackId=readInitTrackId(init);
+             tracks[kind]={kind,codec:c,init,trackId,sb:null,queue:[],initQueued:false};
+             if(kind==='video'){initSegment=init;fragmentTrackId=trackId;trackFixInfo='video track='+trackId;}
+             streamInitInfo+='; '+kind+' codec='+c+' track='+trackId;
+             setupSource(id,ws,ms);
            }catch(e){streamInitInfo+='; init-decode-error='+e.message;}
          }
-         if(codec) codec.split(',').map(c=>c.trim()).filter(Boolean).forEach(c=>{if(!codecs.includes(c))codecs.push(c);});
-         // Wait for first media fragment to learn its tfhd track_ID.
        }else if(m.type==='error'){
          say('Ошибка Ivideon: '+(m.value||m.message||'поток недоступен'));
        }else if(m.type==='metadata' && !sourceBuffer){
@@ -275,10 +294,17 @@ body{position:fixed;inset:0}
        }
      }else if(event.data instanceof ArrayBuffer){
        if(!isCurrent(id,ws,ms))return;
-       if(fragmentTrackId===null){fragmentTrackId=readFragmentTrackId(event.data);if(fragmentTrackId!==null&&initSegment){try{trackFixInfo=alignInitTrackId(initSegment,fragmentTrackId);}catch(e){trackFixInfo='ошибка: '+e.message;}}}
-       const normalized=normalizeFragmentSamples(event.data);
-       history.push(normalized);if(history.length>12)history.shift();queue.push(normalized);setupSource(id,ws,ms);
-       if(sourceBuffer)drain(id,ws,ms,sourceBuffer);
+       const binaryTrackId=readFragmentTrackId(event.data);
+       let tr=Object.keys(tracks).map(k=>tracks[k]).find(x=>x&&x.trackId===binaryTrackId);
+       if(!tr&&binaryTrackId!==null&&tracks.video){try{trackFixInfo=alignInitTrackId(tracks.video.init,binaryTrackId);tracks.video.trackId=binaryTrackId;tr=tracks.video;}catch(e){}}
+       if(!tr)tr=tracks.video;
+       if(tr){
+         const normalized=tr.kind==='video'?normalizeFragmentSamples(event.data):event.data;
+         tr.queue.push(normalized);
+         if(tr.kind==='video'){history.push(normalized);if(history.length>12)history.shift();queue=tr.queue;}
+         setupSource(id,ws,ms);
+         if(tr.sb)drainTrack(id,ws,ms,tr);
+       }
        if(video.paused)video.play().catch(e=>{if(isCurrent(id,ws,ms))say('Запуск видео: '+(e.message||e.name));});
      }
    };
@@ -302,7 +328,7 @@ body{position:fixed;inset:0}
  window.stopIvideonStream=()=>{
    stopped=true;session++;
    const ws=socket, ms=mediaSource, url=objectUrl;
-   socket=null;mediaSource=null;sourceBuffer=null;queue=[];history=[];codecs=[];sourceOpen=false;objectUrl=null;initSegment=null;initQueued=false;fragmentTrackId=null;fragmentTrackId=null;trackFixInfo='не проверено';
+   socket=null;mediaSource=null;sourceBuffer=null;queue=[];history=[];codecs=[];sourceOpen=false;objectUrl=null;initSegment=null;initQueued=false;fragmentTrackId=null;tracks.audio=null;tracks.video=null;trackFixInfo='не проверено';if(qualityMonitor){clearInterval(qualityMonitor);qualityMonitor=null;}
    if(ws){try{ws.close();}catch(e){}}
    if(ms&&ms.readyState==='open'){try{ms.endOfStream();}catch(e){}}
    if(url){try{URL.revokeObjectURL(url);}catch(e){}}
