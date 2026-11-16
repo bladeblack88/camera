@@ -116,7 +116,7 @@ jobs:
           for host in hosts:
               for token_name, token in tokens:
                   snap = host + "/cameras/" + camera_path + "/live_preview"
-                  call(f"{token_name} GET snapshot {host}", snap, "GET", token)
+                  call(f"{token_name} GET snapshot {host}", snap + "?op=GET", "GET", token)
                   stream = snap + "?op=STREAM"
                   call(f"{token_name} POST STREAM Bearer {host}", stream, "POST", token)
                   qurl = stream + "&access_token=" + urllib.parse.quote(token, safe="")
