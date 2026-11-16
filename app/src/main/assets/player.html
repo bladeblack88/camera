@@ -17,7 +17,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound');
- let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false;
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
    try{
@@ -42,6 +42,14 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      return data.byteLength+' bytes ['+readBoxes(0,data.byteLength,0).join(', ')+']';
    }catch(e){return data.byteLength+' bytes [MP4 inspect error: '+e.message+']';}
  }
+ function readFragmentTrackId(data){
+   try{const v=new DataView(data);let p=0;while(p+8<=data.byteLength){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7));if(n<8||p+n>data.byteLength)break;if(t==='moof'){let q=p+8;while(q+8<=p+n){let z=v.getUint32(q),u=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7));if(z<8||q+z>p+n)break;if(u==='traf'){let a=q+8;while(a+8<=q+z){let b=v.getUint32(a),w=String.fromCharCode(v.getUint8(a+4),v.getUint8(a+5),v.getUint8(a+6),v.getUint8(a+7));if(b<8||a+b>q+z)break;if(w==='tfhd'&&b>=16)return v.getUint32(a+12);a+=b;}}q+=z;}}p+=n;}}catch(e){}return null;
+ }
+ function alignInitTrackId(buffer,targetId){
+   const v=new DataView(buffer),found=[],containers=['moov','trak','mdia','minf','stbl','mvex','edts','dinf'];
+   function walk(start,end){let p=start;while(p+8<=end){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7)),h=8;if(n===1){if(p+16>end)break;n=v.getUint32(p+8)*4294967296+v.getUint32(p+12);h=16;}else if(n===0)n=end-p;if(n<h||p+n>end)break;if(t==='tkhd'&&n>=24){const ver=v.getUint8(p+h),o=p+(ver===1?28:20);if(o+4<=p+n){found.push('tkhd:'+v.getUint32(o));v.setUint32(o,targetId);}}else if(t==='trex'&&n>=16){found.push('trex:'+v.getUint32(p+12));v.setUint32(p+12,targetId);}if(containers.includes(t))walk(p+h,p+n);p+=n;}}
+   walk(0,buffer.byteLength);return found.join(',')+' => '+targetId;
+ }
  function isCurrent(id, ws, ms){
    return id===session && !stopped && ws===socket && ms===mediaSource;
  }
@@ -51,7 +59,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    return false;
  }
  function setupSource(id, ws, ms){
-   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment) return;
+   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment || fragmentTrackId===null) return;
    // The supplied Ivideon init segment currently describes a video (vide) track only.
    const videoCodecs=codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'));
    if(!videoCodecs.length) return;
@@ -115,7 +123,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
            }catch(e){streamInitInfo+='; init-decode-error='+e.message;}
          }
          if(codec && !codecs.includes(codec))codecs.push(codec);
-         setupSource(id,ws,ms);
+         // Wait for first media fragment to learn its tfhd track_ID.
        }else if(m.type==='error'){
          say('Ошибка Ivideon: '+(m.value||m.message||'поток недоступен'));
        }else if(m.type==='metadata' && !sourceBuffer){
@@ -123,6 +131,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
        }
      }else if(event.data instanceof ArrayBuffer){
        if(!isCurrent(id,ws,ms))return;
+       if(fragmentTrackId===null){fragmentTrackId=readFragmentTrackId(event.data);if(fragmentTrackId!==null&&initSegment){try{trackFixInfo=alignInitTrackId(initSegment,fragmentTrackId);}catch(e){trackFixInfo='ошибка: '+e.message;}}}
        queue.push(event.data);setupSource(id,ws,ms);
        if(sourceBuffer)drain(id,ws,ms,sourceBuffer);
        if(video.paused)video.play().catch(()=>{if(isCurrent(id,ws,ms))sound.style.display='block';});
@@ -154,7 +163,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    const e=video.error;
    say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
      '; readyState='+video.readyState+'; networkState='+video.networkState+
-     '; codecs='+codecs.join(',')+'; stream-init='+streamInitInfo+'; initChunk='+initChunkInfo+'; firstMediaChunk='+firstMediaChunkInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
+     '; codecs='+codecs.join(',')+'; stream-init='+streamInitInfo+'; trackFix='+trackFixInfo+'; fragmentTrackId='+fragmentTrackId+'; initChunk='+initChunkInfo+'; firstMediaChunk='+firstMediaChunkInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
  });
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
@@ -162,7 +171,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  window.stopIvideonStream=()=>{
    stopped=true;session++;
    const ws=socket, ms=mediaSource, url=objectUrl;
-   socket=null;mediaSource=null;sourceBuffer=null;queue=[];codecs=[];sourceOpen=false;objectUrl=null;initSegment=null;initQueued=false;
+   socket=null;mediaSource=null;sourceBuffer=null;queue=[];codecs=[];sourceOpen=false;objectUrl=null;initSegment=null;initQueued=false;fragmentTrackId=null;fragmentTrackId=null;trackFixInfo='не проверено';
    if(ws){try{ws.close();}catch(e){}}
    if(ms&&ms.readyState==='open'){try{ms.endOfStream();}catch(e){}}
    if(url){try{URL.revokeObjectURL(url);}catch(e){}}
