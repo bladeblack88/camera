@@ -153,7 +153,8 @@ jobs:
                   call(f"{token_name} POST STREAM query-token {host}", qurl, "POST", token, query_token=True)
           # Probe the continuous Ivideon WebSocket MP4 stream (not JPEG live_preview).
           import subprocess, sys
-          subprocess.run([sys.executable, "-m", "pip", "install", "-q", "websocket-client"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", "/tmp/ivideon-wsdeps", "websocket-client"], check=True)
+          sys.path.insert(0, "/tmp/ivideon-wsdeps")
           import websocket
           for host in ("https://openapi-alpha.ivideon.com", BASE):
               for token_name, token in tokens:
