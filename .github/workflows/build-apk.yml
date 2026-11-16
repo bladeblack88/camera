@@ -109,6 +109,10 @@ jobs:
           except Exception:
               pass
 
+          camera_path = urllib.parse.quote(CAMERA, safe="")
+          tokens = [("api-key", KEY)]
+          if clone_token:
+              tokens.append(("clone-token", clone_token))
           # Check canonical camera metadata and test the camera id with its colon left unescaped.
           for host in (BASE, "https://openapi-alpha.ivideon.com"):
               find_cameras = call("CAMERAS FIND " + host, host + "/cameras?op=FIND", "POST", KEY)
@@ -116,20 +120,19 @@ jobs:
                   try:
                       items = find_cameras.get("result", {}).get("items", [])
                       matched = [x for x in items if x.get("id") == CAMERA]
-                      print("CAMERA FIND MATCH: " + json.dumps(matched, ensure_ascii=False)[:1800] if matched else "CAMERA FIND: target id not present in first page; item_count=" + str(len(items)))
+                      if matched:
+                          x = matched[0]
+                          print("CAMERA META: " + json.dumps({k: x.get(k) for k in ("id","name","online","connected","mode","type","plan","img_url","owner_id")}, ensure_ascii=False)[:1600])
+                      else:
+                          print("CAMERA FIND: target id not present; item_count=" + str(len(items)))
                   except Exception as e:
                       print("CAMERA FIND parse: " + type(e).__name__)
-              raw_path = CAMERA  # Preserve the literal colon in the path segment.
-              raw_snap = host + "/cameras/" + raw_path + "/live_preview"
+              raw_snap = host + "/cameras/" + CAMERA + "/live_preview"
               for token_name, token in tokens:
                   qurl = raw_snap + "?op=GET&q=2&access_token=" + urllib.parse.quote(token, safe="")
                   call(f"{token_name} GET snapshot raw-colon query-token {host}", qurl, "GET", token, query_token=True)
                   call(f"{token_name} GET snapshot raw-colon bearer {host}", raw_snap + "?op=GET&q=2", "GET", token)
 
-          camera_path = urllib.parse.quote(CAMERA, safe="")
-          tokens = [("api-key", KEY)]
-          if clone_token:
-              tokens.append(("clone-token", clone_token))
           # Public Ivideon examples use access_token in the query string for JPEG preview.
           for extra_host in ("https://openapi-alpha.ivideon.com",):
               if extra_host not in hosts:
