@@ -71,7 +71,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
            if(len<1||q+len>end){valid=false;nal.push('BADlen='+len);break;}
            nal.push('len='+len+'/type='+(bytes[q]&31));q+=len;
          }
-         samples.push('#'+(n+1)+':size='+sz+' nal='+nal.join('|')+' parse='+(valid?'ok':'bad'));
+         const preview=Array.from(bytes.slice(pos,Math.min(end,pos+Math.min(sz,32)))).map(x=>x.toString(16).padStart(2,'0')).join(''); samples.push('#'+(n+1)+':size='+sz+' hex='+preview+' nal='+nal.join('|')+' parse='+(valid?'ok':'bad'));
          pos=end;
        }
        extra='; sampleCheck='+samples.join(';')+'; mdatPayload='+md.size+'; trunSum='+tr.sum+'; sampleEnd='+pos+'; lengthSize='+(av?av.lengthSize:'default4');
