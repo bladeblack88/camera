@@ -23,6 +23,98 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+      - name: Diagnose Ivideon API authentication and endpoints
+        env:
+          IVIDEON_API_KEY: ${{ secrets.IVIDEON_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.error, urllib.parse, urllib.request
+
+          KEY = os.environ.get("IVIDEON_API_KEY", "")
+          CAMERA = "100-y4iXBgzCDn0C8Jv08JcXDr:0"
+          BASE = "https://openapi-alpha-eu01.ivideon.com"
+          if not KEY:
+              print("DIAG: IVIDEON_API_KEY missing; skipping API probes")
+              raise SystemExit(0)
+
+          def safe_body(raw, secrets):
+              s = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+              for secret in secrets:
+                  if secret:
+                      s = s.replace(secret, "[REDACTED]")
+              s = re.sub(r'(?i)("(?:access_token|refresh_token|token)"\\s*:\\s*")[^"]*(")', r'\\1[REDACTED]\\2', s)
+              s = re.sub(r'"id"\\s*:\\s*"xtok-[^"]+"', '"id":"[REDACTED]"', s)
+              return s[:450].replace("\\n", " ")
+
+          def call(label, url, method, token, query_token=False):
+              headers = {"Accept": "application/json"}
+              if token and not query_token:
+                  headers["Authorization"] = "Bearer " + token
+              data = None
+              if method == "POST":
+                  headers["Content-Type"] = "application/json"
+                  data = json.dumps({"fps": 2, "q": 1}).encode()
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=18) as r:
+                      raw = r.read(1800)
+                      status, ctype = r.status, r.headers.get("Content-Type", "")
+              except urllib.error.HTTPError as e:
+                  raw = e.read(1800)
+                  status, ctype = e.code, e.headers.get("Content-Type", "")
+              except Exception as e:
+                  print(f"{label}: NETWORK {type(e).__name__}: {str(e)[:160]}")
+                  return None
+              body = safe_body(raw, [KEY, token])
+              print(f"{label}: HTTP {status}; {ctype}; body={body}")
+              try:
+                  return json.loads(raw.decode("utf-8"))
+              except Exception:
+                  return None
+
+          find = call("FIND", BASE + "/api_keys?op=FIND", "POST", KEY)
+          key_id = None
+          try:
+              key_id = next(x["id"] for x in find["result"]["items"] if x.get("id"))
+          except Exception:
+              pass
+          clone = None
+          if key_id:
+              clone = call("CLONE", BASE + "/api_keys/" + urllib.parse.quote(key_id, safe="") + "?op=CLONE", "POST", KEY)
+          else:
+              print("CLONE: skipped; APIKey id not found")
+
+          clone_token = None
+          hosts = [BASE]
+          try:
+              result = clone["result"]
+              candidate = result.get("id", "")
+              if isinstance(candidate, str) and candidate.startswith("xtok-"):
+                  clone_token = candidate
+              for name in ("api5_host", "api_host", "api4_host"):
+                  host = result.get(name)
+                  if host:
+                      if not host.startswith("http"):
+                          host = "https://" + host
+                      if host.rstrip("/") not in hosts:
+                          hosts.append(host.rstrip("/"))
+          except Exception:
+              pass
+
+          camera_path = urllib.parse.quote(CAMERA, safe="")
+          tokens = [("api-key", KEY)]
+          if clone_token:
+              tokens.append(("clone-token", clone_token))
+          for host in hosts:
+              for token_name, token in tokens:
+                  snap = host + "/cameras/" + camera_path + "/live_preview"
+                  call(f"{token_name} GET snapshot {host}", snap, "GET", token)
+                  stream = snap + "?op=STREAM"
+                  call(f"{token_name} POST STREAM Bearer {host}", stream, "POST", token)
+                  qurl = stream + "&access_token=" + urllib.parse.quote(token, safe="")
+                  call(f"{token_name} POST STREAM query-token {host}", qurl, "POST", token, query_token=True)
+          print("DIAG COMPLETE: credentials and token values are not printed.")
+          PY
       - name: Build debug APK
         env:
           IVIDEON_API_KEY: ${{ secrets.IVIDEON_API_KEY }}
