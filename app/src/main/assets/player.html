@@ -61,7 +61,8 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      const tr=boxes.find(x=>x.type==='trun'), md=boxes.find(x=>x.type==='mdat'), av=boxes.find(x=>x.type==='avcC');
      if(tr&&md&&tr.sizes.length){
        let offset=tr.dataOffset===null?md.start:tr.dataOffset;
-       const relative=offset>=0&&offset<data.byteLength?offset:md.start;
+       // If trun sizes exactly cover mdat, that is the authoritative sample start.
+       const relative=(tr.sum===md.size)?md.start:(offset>=0&&offset<data.byteLength?offset:md.start);
        let pos=relative, samples=[];
        for(let n=0;n<Math.min(5,tr.sizes.length);n++){
          const sz=tr.sizes[n], end=pos+sz, nal=[];
@@ -126,9 +127,18 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
        if(flags&0x800)q+=4;
      }
      if(sizePositions.length!==count||dataOffsetPos<0||dataOffset<=0)return data;
-     const payloadStart=moof+dataOffset, payloadEnd=mdat+mdatSize;
-     let total=sizes.reduce((a,b)=>a+b,0);
-     if(payloadStart<mdat+8||payloadStart+total>payloadEnd||payloadStart+total!==payloadEnd)return data;
+     let payloadStart=moof+dataOffset;
+     const payloadEnd=mdat+mdatSize;
+     const total=sizes.reduce((a,b)=>a+b,0);
+     // Some Ivideon fragments report a trun data_offset that points inside mdat,
+     // even though the trun sample sizes exactly cover the entire mdat payload.
+     // In that unambiguous case, use the actual mdat payload start and repair trun.
+     if(payloadStart<mdat+8||payloadStart+total!==payloadEnd){
+       if(total!==mdatSize-8)return data;
+       payloadStart=mdat+8;
+       dataOffset=payloadStart-moof;
+     }
+     if(payloadStart+total!==payloadEnd)return data;
      let pos=payloadStart, extra=count*4;
      // Each sample must begin with a plausible AVC NAL header, not an existing length prefix.
      for(const size of sizes){
