@@ -4,23 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <style>
-html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
-#video{width:100%;height:100%;object-fit:contain;background:#000}
-#status{position:absolute;left:0;right:0;bottom:12px;text-align:center;font-size:14px;text-shadow:0 1px 4px #000;padding:8px}
-#native{position:absolute;right:8px;bottom:58px;z-index:6;border:1px solid #aaa;border-radius:7px;padding:9px 12px;background:#222;color:#fff;font-size:13px}#sound{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:0;border-radius:8px;padding:14px 20px;background:#222;color:#fff;font-size:16px;display:none}#codecs{position:absolute;top:8px;left:8px;right:8px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;z-index:5}#codecs button{border:1px solid #888;border-radius:7px;padding:7px 9px;background:#222;color:#fff;font-size:12px}#codecs button.active{background:#176b35;border-color:#7dffad}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;overflow:hidden}
+body{position:fixed;inset:0}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#status{position:absolute;left:0;right:0;bottom:12px;text-align:center;font:14px Arial,sans-serif;text-shadow:0 1px 4px #000;padding:8px;pointer-events:none}
 </style>
 </head>
 <body>
 <video id="video" autoplay playsinline></video>
 <div id="status">Подключение к Ivideon…</div>
-<div id="codecs"></div>
-<button id="native">Тест MediaCodec</button>
-<button id="sound">Включить звук</button>
 <script>
 (() => {
- const nativeButton=document.getElementById('native');
- nativeButton.addEventListener('click',()=>{if(window.Android&&Android.openNativePlayer)Android.openNativePlayer();});
- const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound'), codecPanel=document.getElementById('codecs');
+ const video=document.getElementById('video'), status=document.getElementById('status');
  let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto', activeMime='не создан';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
@@ -222,20 +218,6 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      say('appendBuffer: '+e.name+': '+e.message+'; chunk#'+appendCount+' '+lastChunkInfo);
    }
  }
- function rebuildForCodec(codec){
-   selectedCodec=codec;
-   [...codecPanel.querySelectorAll('button')].forEach(b=>b.classList.toggle('active',b.dataset.codec===codec));
-   if(!initSegment||fragmentTrackId===null||!socket){say('Выбран '+(codec==='auto'?'Авто':codec)+'; ожидаю первый видеосегмент…');return;}
-   const id=session, ws=socket, old=mediaSource, oldUrl=objectUrl;
-   sourceBuffer=null;sourceOpen=false;initQueued=false;queue=history.slice();
-   if(old&&old.readyState==='open'){try{old.endOfStream();}catch(e){}}
-   if(oldUrl){try{URL.revokeObjectURL(oldUrl);}catch(e){}}
-   const ms=new MediaSource();mediaSource=ms;objectUrl=URL.createObjectURL(ms);video.src=objectUrl;
-   ms.addEventListener('sourceopen',()=>{if(isCurrent(id,ws,ms)){sourceOpen=true;setupSource(id,ws,ms);}});
-   say('Проверяю кодек '+(codec==='auto'?'из avcC':codec)+'…');
- }
- const codecChoices=[['Авто','auto'],['H.264 High 2.2','avc1.640016'],['H.264 High 3.0','avc1.64001e'],['H.264 High 3.1','avc1.64001f'],['H.264 High 4.0','avc1.640028'],['H.264 High 4.1','avc1.640029'],['H.264 Main 3.0','avc1.4d001e'],['H.264 Main 3.1','avc1.4d001f'],['H.264 Main 4.0','avc1.4d0028'],['H.264 Main 4.1','avc1.4d0029'],['H.264 Baseline 3.0','avc1.42001e'],['H.264 Baseline 3.1','avc1.42001f']];
- codecChoices.forEach(([label,codec])=>{const b=document.createElement('button');b.textContent=label;b.dataset.codec=codec;b.addEventListener('click',()=>rebuildForCodec(codec));codecPanel.appendChild(b);});
  function start(url){
    // Invalidate the previous connection before closing it: its late events must be ignored.
    stopped=true; session++;
@@ -286,7 +268,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
        const normalized=normalizeFragmentSamples(event.data);
        history.push(normalized);if(history.length>12)history.shift();queue.push(normalized);setupSource(id,ws,ms);
        if(sourceBuffer)drain(id,ws,ms,sourceBuffer);
-       if(video.paused)video.play().catch(()=>{if(isCurrent(id,ws,ms))sound.style.display='block';});
+       if(video.paused)video.play().catch(e=>{if(isCurrent(id,ws,ms))say('Запуск видео: '+(e.message||e.name));});
      }
    };
    ws.onerror=()=>{if(isCurrent(id,ws,ms))say('Ошибка WebSocket-подключения');};
@@ -297,27 +279,13 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      }
    };
  }
- sound.addEventListener('click',()=>{
-   video.muted=false;
-   video.play().then(()=>{sound.style.display='none';})
-     .catch(e=>{
-       const media=video.error ? ' mediaError='+video.error.code+(video.error.message?' '+video.error.message:'') : '';
-       const details='Воспроизведение: '+(e.name||'Error')+': '+(e.message||'без подробностей')+
-         '; readyState='+video.readyState+'; networkState='+video.networkState+
-         '; MediaSource='+(mediaSource?mediaSource.readyState:'нет')+
-         '; SourceBuffer='+(sourceBuffer?'есть':'нет')+media;
-       say(details);
-       sound.textContent='Повторить';
-       sound.style.display='block';
-     });
- });
  video.addEventListener('error',()=>{
    const e=video.error;
    say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
      '; readyState='+video.readyState+'; networkState='+video.networkState+
      '; codecs='+codecs.join(',')+'; selectedCodec='+selectedCodec+'; activeMime='+activeMime+'; stream-init='+streamInitInfo+'; trackFix='+trackFixInfo+'; fragmentTrackId='+fragmentTrackId+'; initChunk='+initChunkInfo+'; firstMediaChunk='+firstMediaChunkInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
  });
- video.addEventListener('playing',()=>{say('');sound.style.display='none';});
+ video.addEventListener('playing',()=>{say('');});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
  window.startIvideonStream=start;
  window.stopIvideonStream=()=>{
