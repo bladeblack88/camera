@@ -326,9 +326,11 @@ class NativePlayerActivity : AppCompatActivity() {
         val total = sampleSizes.sumOf { it.toLong() }
         if (total != (mdatEnd - mdatStart).toLong()) return null
         var offset = mdatStart
-        val samples = sampleSizes.map { size ->
+        val samples = ArrayList<ByteArray>(sampleSizes.size)
+        for (size in sampleSizes) {
             if (size < 0 || offset + size > mdatEnd) return null
-            data.copyOfRange(offset, offset + size).also { offset += size }
+            samples.add(data.copyOfRange(offset, offset + size))
+            offset += size
         }
         return ParsedFragment(trackId, samples)
     }
