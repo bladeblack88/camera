@@ -3,29 +3,33 @@ package com.bladeblack88.ivideonfullscreen
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
-import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
+import com.google.gson.JsonParser
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -33,6 +37,8 @@ class MainActivity : AppCompatActivity() {
         private const val CAMERA_ID = "100-y4iXBgzCDn0C8Jv08JcXDr:0"
         private const val API_BASE = "https://openapi-alpha-eu01.ivideon.com"
         private const val RETRY_MS = 7000L
+        private const val PREVIEW_FPS = 5
+        private const val PREVIEW_QUALITY = 2
     }
 
     private val http = OkHttpClient.Builder()
@@ -41,21 +47,26 @@ class MainActivity : AppCompatActivity() {
         .followRedirects(true)
         .build()
 
-    private var player: ExoPlayer? = null
+    private val wsClient = http.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
     private var retryJob: Job? = null
     private var statusView: TextView? = null
-    private var playerView: PlayerView? = null
+    private var imageView: ImageView? = null
+    private var previewSocket: WebSocket? = null
     private var lastError = "Пока ошибок нет."
+    private var stopping = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersive()
-        showPlayer()
+        showPreview()
         if (BuildConfig.IVIDEON_API_KEY.isBlank()) {
             showError("API-ключ не добавлен при сборке приложения")
         } else {
-            startLive()
+            startPreview()
         }
     }
 
@@ -71,14 +82,14 @@ class MainActivity : AppCompatActivity() {
             )
     }
 
-    private fun showPlayer() {
+    private fun showPreview() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF000000.toInt())
         }
-        playerView = PlayerView(this).apply {
-            useController = false
-            setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+        imageView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(0xFF000000.toInt())
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
             )
@@ -99,7 +110,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Текст ошибки скопирован", Toast.LENGTH_SHORT).show()
             }
         }
-        root.addView(playerView)
+        root.addView(imageView)
         root.addView(statusView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -109,75 +120,107 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         setContentView(root)
-        player = ExoPlayer.Builder(this).build().also { exo ->
-            playerView?.player = exo
-            exo.addListener(object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    showError("Ошибка воспроизведения: ${error.errorCodeName}: ${error.message ?: "без описания"}")
-                    scheduleRetry()
-                }
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_READY) statusView?.text = ""
-                    if (playbackState == Player.STATE_BUFFERING) statusView?.text = "Загрузка видео…"
-                }
-            })
-        }
     }
 
     private fun showError(message: String) {
-        lastError = message.replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
+        lastError = message
+            .replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
+            .take(1500)
         statusView?.text = lastError
     }
 
-    private fun startLive() {
+    private fun startPreview() {
         retryJob?.cancel()
+        previewSocket?.cancel()
+        previewSocket = null
+        stopping = false
         retryJob = lifecycleScope.launch {
-            statusView?.text = "Подключение к Ivideon…"
+            statusView?.text = "Запрос предпросмотра Ivideon…"
             try {
-                val streamUrl = withContext(Dispatchers.IO) { requestLiveUrl() }
-                statusView?.text = "Запуск трансляции…"
-                player?.apply {
-                    setMediaItem(MediaItem.fromUri(streamUrl))
-                    prepare()
-                    playWhenReady = true
-                }
+                val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl() }
+                val socketRequest = Request.Builder()
+                    .url(wsUrl)
+                    .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+                    .build()
+                statusView?.text = "Подключение к потоку изображений…"
+                previewSocket = wsClient.newWebSocket(socketRequest, object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        runOnUiThread {
+                            statusView?.text = "Ожидание изображения с камеры…"
+                        }
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                        val bitmap = BitmapFactory.decodeByteArray(bytes.toByteArray(), 0, bytes.size)
+                        if (bitmap != null) {
+                            runOnUiThread {
+                                imageView?.setImageBitmap(bitmap)
+                                statusView?.text = ""
+                            }
+                        } else {
+                            showError("WebSocket подключён, но получен непонятный JPEG-кадр")
+                        }
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val safeText = text.take(500)
+                        runOnUiThread {
+                            showError("Сообщение WebSocket: $safeText")
+                        }
+                    }
+
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        if (!stopping && !isFinishing) scheduleRetry("Канал предпросмотра закрыт: $code $reason")
+                    }
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        val detail = response?.let { "HTTP ${it.code}" } ?: (t.message ?: "нет описания")
+                        if (!stopping && !isFinishing) scheduleRetry("Ошибка WebSocket: $detail")
+                    }
+                })
             } catch (e: Exception) {
                 showError("Ошибка Ivideon: ${e.message ?: "нет ответа API"}")
                 delay(RETRY_MS)
-                if (!isFinishing) startLive()
+                if (!isFinishing) startPreview()
             }
         }
     }
 
-    private fun scheduleRetry() {
+    private fun scheduleRetry(message: String) {
         if (retryJob?.isActive == true) return
+        runOnUiThread { showError("$message. Повторное подключение…") }
         retryJob = lifecycleScope.launch {
             delay(RETRY_MS)
-            if (!isFinishing) startLive()
+            if (!isFinishing) startPreview()
         }
     }
 
-    private fun requestLiveUrl(): String {
-        val cameraPath = android.net.Uri.encode(CAMERA_ID)
+    private fun requestPreviewUrl(): String {
+        val cameraPath = Uri.encode(CAMERA_ID)
+        val body = """{"fps":$PREVIEW_FPS,"q":$PREVIEW_QUALITY}"""
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
         val request = Request.Builder()
-            .url("$API_BASE/cameras/$cameraPath/live_stream?format=hls&q=2&expect=body&streams=both&video_codecs=h264")
+            .url("$API_BASE/cameras/$cameraPath/live_preview?op=STREAM")
             .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
             .header("Accept", "application/json")
             .header("Cache-Control", "no-cache")
-            .get()
+            .post(body)
             .build()
 
         return http.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
+            val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                error("HTTP ${response.code}: ${body.take(1200)}")
+                error("HTTP ${response.code}: ${responseBody.take(1200)}")
             }
-            val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+            val json = runCatching { JsonParser.parseString(responseBody).asJsonObject }.getOrNull()
             val url = json?.get("url")?.takeIf { it.isJsonPrimitive }?.asString
-            url ?: response.request.url.toString().takeIf {
-                it.contains(".m3u8") ||
-                    response.header("Content-Type")?.contains("mpegurl", true) == true
-            } ?: error("API не вернул URL видеопотока: ${body.take(1200)}")
+                ?: json?.get("data")?.takeIf { it.isJsonObject }
+                    ?.asJsonObject?.get("url")?.takeIf { it.isJsonPrimitive }?.asString
+            val result = url ?: error("API не вернул WebSocket URL: ${responseBody.take(1000)}")
+            if (!result.startsWith("wss://") && !result.startsWith("ws://")) {
+                error("API вернул URL не WebSocket: ${result.take(300)}")
+            }
+            result
         }
     }
 
@@ -187,10 +230,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        stopping = true
         retryJob?.cancel()
-        playerView?.player = null
-        player?.release()
-        player = null
+        previewSocket?.close(1000, "Activity destroyed")
+        previewSocket = null
+        wsClient.dispatcher.cancelAll()
         super.onDestroy()
     }
 }
