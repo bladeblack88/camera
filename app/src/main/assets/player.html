@@ -270,7 +270,8 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      }else if(event.data instanceof ArrayBuffer){
        if(!isCurrent(id,ws,ms))return;
        if(fragmentTrackId===null){fragmentTrackId=readFragmentTrackId(event.data);if(fragmentTrackId!==null&&initSegment){try{trackFixInfo=alignInitTrackId(initSegment,fragmentTrackId);}catch(e){trackFixInfo='ошибка: '+e.message;}}}
-       const normalized=normalizeFragmentSamples(event.data);\n       history.push(normalized);if(history.length>12)history.shift();queue.push(normalized);setupSource(id,ws,ms);
+       const normalized=normalizeFragmentSamples(event.data);
+       history.push(normalized);if(history.length>12)history.shift();queue.push(normalized);setupSource(id,ws,ms);
        if(sourceBuffer)drain(id,ws,ms,sourceBuffer);
        if(video.paused)video.play().catch(()=>{if(isCurrent(id,ws,ms))sound.style.display='block';});
      }
