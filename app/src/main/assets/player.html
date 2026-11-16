@@ -150,9 +150,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      const ov=new DataView(out.buffer);
      ov.setInt32(dataOffsetPos,dataOffset+extra);
      // Update mdat and enclosing top-level size; moof itself is unchanged.
-     ov.setUint32(mdat+extra,mdatSize+extra);
-     const topSize=ov.getUint32(0);
-     if(topSize!==0&&topSize!==1)ov.setUint32(0,topSize+extra);
+     ov.setUint32(mdat,mdatSize+extra);
      return out.buffer;
    }catch(e){return data;}
  }
