@@ -21,25 +21,62 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  function say(s){status.textContent=s;}
  function inspectMp4(data){
    try{
-     const v=new DataView(data), out=[]; let p=0;
-     const readBoxes=(start,end,depth)=>{
-       let q=start, items=[];
-       while(q+8<=end && items.length<16){
-         let size=v.getUint32(q), type=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7)), h=8;
-         if(size===1){if(q+16>end)break;size=v.getUint32(q+8)*4294967296+v.getUint32(q+12);h=16;}else if(size===0)size=end-q;
-         if(size<h || q+size>end){items.push(type+':BAD('+size+')');break;}
+     const v=new DataView(data), bytes=new Uint8Array(data), boxes=[];
+     const u32=(p)=>v.getUint32(p), i32=(p)=>v.getInt32(p);
+     function walk(start,end,depth){
+       let p=start, out=[];
+       while(p+8<=end && out.length<32){
+         let size=u32(p), type=String.fromCharCode(bytes[p+4],bytes[p+5],bytes[p+6],bytes[p+7]), h=8;
+         if(size===1){if(p+16>end)break;size=u32(p+8)*4294967296+u32(p+12);h=16;}else if(size===0)size=end-p;
+         if(size<h||p+size>end){out.push(type+':BAD('+size+')');break;}
          let detail='';
-         if(type==='mfhd' && size>=16) detail=' seq='+v.getUint32(q+12);
-         if(type==='tfhd' && size>=16) detail=' track='+v.getUint32(q+12)+' flags=0x'+v.getUint32(q+8).toString(16).slice(2);
-         if(type==='tfdt' && size>=16){const ver=v.getUint8(q+8);detail=' decodeTime='+(ver===1&&size>=20?v.getUint32(q+12)*4294967296+v.getUint32(q+16):v.getUint32(q+12));}
-         if(type==='trun' && size>=16){const flags=v.getUint32(q+8)&0xffffff;detail=' samples='+v.getUint32(q+12)+' flags=0x'+flags.toString(16);}
-         items.push(type+':'+size+detail);
-         if(['moof','traf'].includes(type)) items[items.length-1]+='{'+readBoxes(q+h,q+size,depth+1).join(',')+'}';
-         q+=size;
+         if(type==='mfhd'&&size>=16)detail=' seq='+u32(p+12);
+         if(type==='tfhd'&&size>=16)detail=' track='+u32(p+12)+' flags=0x'+(u32(p+8)&0xffffff).toString(16);
+         if(type==='tfdt'&&size>=16){const ver=bytes[p+8];detail=' decodeTime='+(ver===1&&size>=20?u32(p+12)*4294967296+u32(p+16):u32(p+12));}
+         if(type==='trun'&&size>=16){
+           const ver=bytes[p+8], flags=u32(p+8)&0xffffff, count=u32(p+12);let q=p+16, dataOffset=null, firstFlags=null, sizes=[], durations=[];
+           if(flags&1){if(q+4<=p+size){dataOffset=i32(q);q+=4;}}
+           if(flags&4){if(q+4<=p+size){firstFlags=u32(q);q+=4;}}
+           for(let n=0;n<count&&n<10000;n++){
+             if(flags&0x100){if(q+4>p+size)break;durations.push(u32(q));q+=4;}
+             if(flags&0x200){if(q+4>p+size)break;sizes.push(u32(q));q+=4;}
+             if(flags&0x400){if(q+4>p+size)break;q+=4;}
+             if(flags&0x800){if(q+4>p+size)break;q+=4;}
+           }
+           const sum=sizes.reduce((a,b)=>a+b,0);
+           detail=' samples='+count+' flags=0x'+flags.toString(16)+' dataOffset='+dataOffset+' sampleSizes='+sizes.length+'/'+count+' sum='+sum+' firstSizes='+sizes.slice(0,8).join(',')+' firstDur='+durations.slice(0,4).join(',');
+           boxes.push({type:'trun',dataOffset,sizes,sum,count,version:ver});
+         }
+         out.push(type+':'+size+detail);
+         if(['moof','traf'].includes(type))out[out.length-1]+='{'+walk(p+h,p+size,depth+1).join(',')+'}';
+         if(type==='mdat')boxes.push({type:'mdat',start:p+h,end:p+size,size:size-h});
+         if(type==='avcC'&&size>=h+5){const z=p+h;boxes.push({type:'avcC',lengthSize:(bytes[z+4]&3)+1,profile:bytes[z+1],compat:bytes[z+2],level:bytes[z+3]});}
+         p+=size;
        }
-       return items;
-     };
-     return data.byteLength+' bytes ['+readBoxes(0,data.byteLength,0).join(', ')+']';
+       return out;
+     }
+     const summary=walk(0,data.byteLength,0);
+     let extra='';
+     const tr=boxes.find(x=>x.type==='trun'), md=boxes.find(x=>x.type==='mdat'), av=boxes.find(x=>x.type==='avcC');
+     if(tr&&md&&tr.sizes.length){
+       let offset=tr.dataOffset===null?md.start:tr.dataOffset;
+       const relative=offset>=0&&offset<data.byteLength?offset:md.start;
+       let pos=relative, samples=[];
+       for(let n=0;n<Math.min(5,tr.sizes.length);n++){
+         const sz=tr.sizes[n], end=pos+sz, nal=[];
+         if(end>data.byteLength||sz<1){samples.push('#'+(n+1)+':BAD size='+sz+' pos='+pos);break;}
+         let q=pos, lenSize=av?av.lengthSize:4, valid=true;
+         while(q+lenSize<=end&&nal.length<8){
+           let len=0;for(let k=0;k<lenSize;k++)len=len*256+bytes[q+k];q+=lenSize;
+           if(len<1||q+len>end){valid=false;nal.push('BADlen='+len);break;}
+           nal.push('len='+len+'/type='+(bytes[q]&31));q+=len;
+         }
+         samples.push('#'+(n+1)+':size='+sz+' nal='+nal.join('|')+' parse='+(valid?'ok':'bad'));
+         pos=end;
+       }
+       extra='; sampleCheck='+samples.join(';')+'; mdatPayload='+md.size+'; trunSum='+tr.sum+'; sampleEnd='+pos+'; lengthSize='+(av?av.lengthSize:'default4');
+     }
+     return data.byteLength+' bytes ['+summary.join(', ')+']'+extra;
    }catch(e){return data.byteLength+' bytes [MP4 inspect error: '+e.message+']';}
  }
  function readFragmentTrackId(data){
