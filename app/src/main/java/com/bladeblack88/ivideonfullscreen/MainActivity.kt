@@ -119,6 +119,11 @@ class MainActivity : AppCompatActivity() {
                 startPreview()
             }
         }
+        val diagnosticButton = Button(this).apply {
+            text = "Проверить API-ключ (APIKey FIND)"
+            isAllCaps = false
+            setOnClickListener { runApiKeyDiagnostic() }
+        }
         val copyButton = Button(this).apply {
             text = "Скопировать ошибку"
             isAllCaps = false
@@ -137,6 +142,10 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
+        root.addView(diagnosticButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(copyButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -144,6 +153,41 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
+    private fun runApiKeyDiagnostic() {
+        retryJob?.cancel()
+        statusView?.text = "Проверяю API-ключ через POST /api_keys?op=FIND…"
+        retryJob = lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { requestApiKeyList() }
+            showError(result)
+        }
+    }
+
+    private fun requestApiKeyList(): String {
+        val url = "$API_BASE/api_keys".toHttpUrlOrNull()?.newBuilder()
+            ?.addQueryParameter("op", "FIND")?.build()
+            ?: return "Ошибка: некорректный адрес Ivideon API"
+        val body = "{}".toRequestBody("application/json; charset=utf-8".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache")
+            .post(body)
+            .build()
+        return try {
+            http.newCall(request).execute().use { response ->
+                val raw = response.body?.string().orEmpty()
+                val safe = raw.replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
+                    .replace(Regex("\\\"(access_token|token|refresh_token)\\\"\\s*:\\s*\\\"[^\\\"]*\\\""), "\\\"$1\\\":\\\"[значение скрыто]\\\"")
+                    .take(1200)
+                "APIKey FIND: HTTP " + response.code +
+                    (if (response.isSuccessful) " (успех)" else " (ошибка)") +
+                    "\\nОтвет Ivideon:\\n" + safe
+            }
+        } catch (e: Exception) {
+            "APIKey FIND: ошибка соединения: " + e.javaClass.simpleName + ": " + (e.message ?: "нет описания")
+        }
+    }
     private fun showError(message: String) {
         lastError = message
             .replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
