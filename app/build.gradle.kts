@@ -15,10 +15,10 @@ android {
     }
     defaultConfig {
         applicationId = "com.bladeblack88.ivideonfullscreen"
-        minSdk = 23
+        minSdk = 21
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         buildConfigField("String", "IVIDEON_API_KEY", "\"$ivideonApiKey\"")
     }
     buildTypes { release { isMinifyEnabled = false } }
