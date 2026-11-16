@@ -124,6 +124,11 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
             setOnClickListener { runApiKeyDiagnostic() }
         }
+        val cloneButton = Button(this).apply {
+            text = "CLONE: получить временный токен и запустить камеру"
+            isAllCaps = false
+            setOnClickListener { runClonePreview() }
+        }
         val copyButton = Button(this).apply {
             text = "Скопировать ошибку"
             isAllCaps = false
@@ -143,6 +148,10 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         root.addView(diagnosticButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        root.addView(cloneButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -187,6 +196,114 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             "APIKey FIND: ошибка соединения: " + e.javaClass.simpleName + ": " + (e.message ?: "нет описания")
         }
+    }
+    private fun runClonePreview() {
+        retryJob?.cancel()
+        previewSocket?.cancel()
+        previewSocket = null
+        stopping = false
+        statusView?.text = "Получаю APIKey и создаю временный AccessToken…"
+        retryJob = lifecycleScope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) { cloneApiKeyToken() }
+                statusView?.text = "Временный токен получен. Запрашиваю preview камеры…"
+                val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl(token) }
+                connectPreviewSocket(wsUrl, token)
+            } catch (e: Exception) {
+                showError("CLONE / preview: ${e.message ?: "нет ответа Ivideon"}")
+            }
+        }
+    }
+
+    private fun cloneApiKeyToken(): String {
+        val findUrl = "$API_BASE/api_keys".toHttpUrlOrNull()!!.newBuilder()
+            .addQueryParameter("op", "FIND").build()
+        val findRequest = Request.Builder().url(findUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .header("Accept", "application/json")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val findRaw = http.newCall(findRequest).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("FIND HTTP ${response.code}: ${sanitizeApiText(text)}")
+            text
+        }
+        val findJson = JsonParser.parseString(findRaw).asJsonObject
+        val items = findJson.getAsJsonObject("result")?.getAsJsonArray("items")
+            ?: error("FIND: в ответе нет result.items")
+        val item = (0 until items.size()).asSequence().map { items[it] }
+            .firstOrNull { it.isJsonObject && it.asJsonObject.has("id") }?.asJsonObject
+            ?: error("FIND: APIKey не найден")
+        val keyId = item.get("id").asString
+        val cloneUrl = "$API_BASE/api_keys/${Uri.encode(keyId)}".toHttpUrlOrNull()!!.newBuilder()
+            .addQueryParameter("op", "CLONE").build()
+        val cloneRequest = Request.Builder().url(cloneUrl)
+            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            .header("Accept", "application/json")
+            .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val cloneRaw = http.newCall(cloneRequest).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("CLONE HTTP ${response.code}: ${sanitizeApiText(text)}")
+            text
+        }
+        return findTokenValue(JsonParser.parseString(cloneRaw))
+            ?: error("CLONE: AccessToken не найден. Ответ: ${sanitizeApiText(cloneRaw)}")
+    }
+
+    private fun findTokenValue(element: com.google.gson.JsonElement): String? {
+        if (element.isJsonObject) {
+            val obj = element.asJsonObject
+            for (name in listOf("access_token", "token")) {
+                val value = obj.get(name)
+                if (value != null && value.isJsonPrimitive && !value.isJsonNull) {
+                    val candidate = value.asString
+                    if (candidate.isNotBlank() && candidate != "null") return candidate
+                }
+            }
+            for ((_, value) in obj.entrySet()) {
+                val found = findTokenValue(value)
+                if (found != null) return found
+            }
+        } else if (element.isJsonArray) {
+            for (value in element.asJsonArray) {
+                val found = findTokenValue(value)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun sanitizeApiText(value: String): String {
+        return value.replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
+            .replace(Regex("\\\"(access_token|token|refresh_token)\\\"\\s*:\\s*\\\"[^\\\"]*\\\""),
+                "\\\"$1\\\":\\\"[токен скрыт]\\\"")
+            .take(1000)
+    }
+
+    private fun connectPreviewSocket(wsUrl: String, token: String) {
+        val socketRequest = Request.Builder().url(wsUrl)
+            .header("Authorization", "Bearer $token").build()
+        statusView?.text = "Временный токен получен. Подключаю WebSocket…"
+        previewSocket = wsClient.newWebSocket(socketRequest, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                runOnUiThread { statusView?.text = "WebSocket подключён, жду кадр…" }
+            }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                val bitmap = BitmapFactory.decodeByteArray(bytes.toByteArray(), 0, bytes.size)
+                if (bitmap != null) runOnUiThread { imageView?.setImageBitmap(bitmap); statusView?.text = "" }
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runOnUiThread { showError("WebSocket: ${text.take(400)}") }
+            }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!stopping && !isFinishing) scheduleRetry("Канал закрыт: $code")
+            }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                val detail = response?.let { "HTTP ${it.code}" } ?: (t.message ?: "нет описания")
+                if (!stopping && !isFinishing) scheduleRetry("WebSocket: $detail")
+            }
+        })
     }
     private fun showError(message: String) {
         lastError = message
@@ -270,7 +387,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun requestPreviewUrl(): String {
+    private fun requestPreviewUrl(authToken: String = BuildConfig.IVIDEON_API_KEY): String {
         val cameraPath = Uri.encode(CAMERA_ID)
         val body = """{"fps":$PREVIEW_FPS,"q":$PREVIEW_QUALITY}"""
             .toRequestBody("application/json; charset=utf-8".toMediaType())
@@ -279,21 +396,21 @@ class MainActivity : AppCompatActivity() {
             ?: error("Некорректный адрес Ivideon API")
         apiUrlBuilder.addQueryParameter("op", "STREAM")
         if (useApiQueryToken) {
-            apiUrlBuilder.addQueryParameter("access_token", BuildConfig.IVIDEON_API_KEY)
+            apiUrlBuilder.addQueryParameter("access_token", authToken)
         }
         val requestBuilder = Request.Builder()
             .url(apiUrlBuilder.build())
             .header("Accept", "application/json")
             .header("Cache-Control", "no-cache")
         if (!useApiQueryToken) {
-            requestBuilder.header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+            requestBuilder.header("Authorization", "Bearer $authToken")
         }
         val request = requestBuilder.post(body).build()
 
         return http.newCall(request).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                error("HTTP ${response.code}: ${responseBody.take(1200)}")
+                error("HTTP ${response.code}: ${sanitizeApiText(responseBody)}")
             }
             val json = runCatching { JsonParser.parseString(responseBody).asJsonObject }.getOrNull()
             val url = json?.get("url")?.takeIf { it.isJsonPrimitive }?.asString
