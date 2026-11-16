@@ -106,76 +106,14 @@ class MainActivity : AppCompatActivity() {
             )
         }
         statusView = TextView(this).apply {
-            text = "Подключение к камере…"
+            text = "Подключение к Ivideon…"
             gravity = Gravity.CENTER
             textSize = 13f
             setTextColor(0xFFFFFFFF.toInt())
             setPadding(8, 8, 8, 8)
         }
-        modeButton = Button(this).apply {
-            text = "Способ 1/4: ${AUTH_MODES[authModeIndex]}"
-            isAllCaps = false
-            setOnClickListener {
-                authModeIndex = (authModeIndex + 1) % AUTH_MODES.size
-                text = "Способ ${authModeIndex + 1}/${AUTH_MODES.size}: ${AUTH_MODES[authModeIndex]}"
-                startPreview()
-            }
-        }
-        val diagnosticButton = Button(this).apply {
-            text = "Проверить API-ключ (APIKey FIND)"
-            isAllCaps = false
-            setOnClickListener { runApiKeyDiagnostic() }
-        }
-        val cloneButton = Button(this).apply {
-            text = "CLONE + STREAM (api5_host)"
-            isAllCaps = false
-            setOnClickListener { runClonePreview(false) }
-        }
-        val alternateHostButton = Button(this).apply {
-            text = "CLONE + STREAM (api_host)"
-            isAllCaps = false
-            setOnClickListener { runClonePreview(true) }
-        }
-        val snapshotButton = Button(this).apply {
-            text = "CLONE + GET JPEG snapshot"
-            isAllCaps = false
-            setOnClickListener { runCloneSnapshot() }
-        }
-        val copyButton = Button(this).apply {
-            text = "Скопировать ошибку"
-            isAllCaps = false
-            setOnClickListener {
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Ivideon error", lastError))
-                Toast.makeText(this@MainActivity, "Текст ошибки скопирован", Toast.LENGTH_SHORT).show()
-            }
-        }
         root.addView(imageView)
         root.addView(statusView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(modeButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(diagnosticButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(cloneButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(alternateHostButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(snapshotButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(copyButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -314,8 +252,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestJpegSnapshot(token: String, apiHost: String): Pair<String, android.graphics.Bitmap?> {
-        val cameraPath = Uri.encode(CAMERA_ID)
-        val url = "$apiHost/cameras/$cameraPath/live_preview".toHttpUrlOrNull()
+        // Keep the camera id colon literal: Ivideon's endpoint rejects an encoded %3A path.
+        val url = "$apiHost/cameras/$CAMERA_ID/live_preview?op=GET&q=$PREVIEW_QUALITY".toHttpUrlOrNull()
             ?: error("Некорректный адрес snapshot API: $apiHost")
         val request = Request.Builder().url(url)
             .header("Authorization", "Bearer $token")
@@ -408,62 +346,29 @@ class MainActivity : AppCompatActivity() {
         previewSocket = null
         stopping = false
         retryJob = lifecycleScope.launch {
-            statusView?.text = "Запрос предпросмотра Ivideon…"
+            statusView?.text = "Подключение к камере Ivideon…"
             try {
-                val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl() }
-                val socketUrl = wsUrl.toHttpUrlOrNull()
-                    ?: error("Некорректный WebSocket URL от Ivideon")
-                val useWsQueryToken = authModeIndex == 1 || authModeIndex == 3
-                val finalSocketUrl = if (useWsQueryToken) {
-                    socketUrl.newBuilder()
-                        .addQueryParameter("access_token", BuildConfig.IVIDEON_API_KEY)
-                        .build()
-                } else socketUrl
-                val socketBuilder = Request.Builder().url(finalSocketUrl)
-                if (!useWsQueryToken) {
-                    socketBuilder.header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
-                }
-                val socketRequest = socketBuilder.build()
-                statusView?.text = "Подключение к потоку изображений…"
-                previewSocket = wsClient.newWebSocket(socketRequest, object : WebSocketListener() {
-                    override fun onOpen(webSocket: WebSocket, response: Response) {
-                        runOnUiThread {
-                            statusView?.text = "Ожидание изображения с камеры…"
+                val access = withContext(Dispatchers.IO) { cloneApiKeyAccess() }
+                statusView?.text = "Камера найдена. Получаю изображение…"
+                while (!stopping && !isFinishing) {
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            requestJpegSnapshot(access.token, API_BASE)
                         }
-                    }
-
-                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                        val bitmap = BitmapFactory.decodeByteArray(bytes.toByteArray(), 0, bytes.size)
+                        val bitmap = result.second
                         if (bitmap != null) {
-                            runOnUiThread {
-                                imageView?.setImageBitmap(bitmap)
-                                statusView?.text = ""
-                            }
+                            imageView?.setImageBitmap(bitmap)
+                            statusView?.text = ""
                         } else {
-                            showError("WebSocket подключён, но получен непонятный JPEG-кадр")
+                            statusView?.text = "Кадр не получен: " + result.first
                         }
+                    } catch (e: Exception) {
+                        statusView?.text = "Ошибка связи: " + (e.message ?: "нет ответа")
                     }
-
-                    override fun onMessage(webSocket: WebSocket, text: String) {
-                        val safeText = text.take(500)
-                        runOnUiThread {
-                            showError("Сообщение WebSocket: $safeText")
-                        }
-                    }
-
-                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                        if (!stopping && !isFinishing) scheduleRetry("Канал предпросмотра закрыт: $code $reason")
-                    }
-
-                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        val detail = response?.let { "HTTP ${it.code}" } ?: (t.message ?: "нет описания")
-                        if (!stopping && !isFinishing) scheduleRetry("Ошибка WebSocket: $detail")
-                    }
-                })
+                    delay(1000L)
+                }
             } catch (e: Exception) {
-                showError("Ошибка Ivideon: ${e.message ?: "нет ответа API"}")
-                delay(RETRY_MS)
-                if (!isFinishing) startPreview()
+                showError("Не удалось подключиться к Ivideon: " + (e.message ?: "нет ответа API"))
             }
         }
     }
