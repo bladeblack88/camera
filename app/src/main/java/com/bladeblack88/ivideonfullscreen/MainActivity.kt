@@ -261,6 +261,12 @@ class MainActivity : AppCompatActivity() {
                     if (candidate.isNotBlank() && candidate != "null") return candidate
                 }
             }
+            // Ivideon CLONE returns the temporary AccessToken in result.id (xtok-...).
+            val idValue = obj.get("id")
+            if (idValue != null && idValue.isJsonPrimitive && !idValue.isJsonNull) {
+                val candidate = idValue.asString
+                if (candidate.startsWith("xtok-")) return candidate
+            }
             for ((_, value) in obj.entrySet()) {
                 val found = findTokenValue(value)
                 if (found != null) return found
@@ -278,6 +284,8 @@ class MainActivity : AppCompatActivity() {
         return value.replace(BuildConfig.IVIDEON_API_KEY, "[ключ скрыт]")
             .replace(Regex("\\\"(access_token|token|refresh_token)\\\"\\s*:\\s*\\\"[^\\\"]*\\\""),
                 "\\\"$1\\\":\\\"[токен скрыт]\\\"")
+            .replace(Regex("\\\"id\\\"\\s*:\\s*\\\"xtok-[^\\\"]*\\\""),
+                "\\\"id\\\":\\\"[временный токен скрыт]\\\"")
             .take(1000)
     }
 
