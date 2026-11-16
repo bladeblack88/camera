@@ -482,7 +482,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val url = "$API_BASE/cameras/$CAMERA_ID/live_stream".toHttpUrlOrNull()!!.newBuilder()
             .addQueryParameter("op", "GET").addQueryParameter("access_token", token)
             .addQueryParameter("q", "2").addQueryParameter("video_codecs", "h264")
-            .addQueryParameter("audio_codecs", "aac,mp3,pcma,pcmu,none")
+            .addQueryParameter("streams", "image")
             .addQueryParameter("format", "ws-fmp4").build()
         val request = Request.Builder().url(url).get().build()
         val raw = http.newCall(request).execute().use {
