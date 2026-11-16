@@ -153,7 +153,7 @@ class MainActivity : AppCompatActivity() {
             .addQueryParameter("access_token", token)
             .addQueryParameter("q", "2")
             .addQueryParameter("video_codecs", "h264")
-            .addQueryParameter("audio_codecs", "aac,mp3,pcma,pcmu,none")
+            .addQueryParameter("streams", "image")
             .addQueryParameter("format", "ws-fmp4")
             .build()
         val request = Request.Builder().url(url)
