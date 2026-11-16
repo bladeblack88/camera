@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
-    <application android:allowBackup="false" android:label="Tuya Camera Player" android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+    <application android:allowBackup="false" android:usesCleartextTraffic="true" android:label="Tuya Camera Player" android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
         <activity android:name=".MainActivity" android:screenOrientation="sensor" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
