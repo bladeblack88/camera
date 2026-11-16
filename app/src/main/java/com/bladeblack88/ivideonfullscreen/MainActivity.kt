@@ -102,7 +102,8 @@ class MainActivity : AppCompatActivity() {
                 if (pageReady) connectInPage(streamUrl)
             } catch (e: Exception) {
                 showStatus("Ошибка подключения: " + (e.message ?: "нет ответа Ivideon"))
-                scheduleRetry()
+                delay(RETRY_MS)
+                if (!stopping && !isFinishing) startPreview()
             }
         }
     }
