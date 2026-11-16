@@ -17,7 +17,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound');
- let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет';
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', streamInitInfo='не получен';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
    try{
@@ -71,7 +71,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    if(oldSocket){try{oldSocket.close();}catch(e){}}
    if(oldSource && oldSource.readyState==='open'){try{oldSource.endOfStream();}catch(e){}}
    if(oldUrl){try{URL.revokeObjectURL(oldUrl);}catch(e){}}
-   stopped=false; appendCount=0; lastChunkInfo='нет';
+   stopped=false; appendCount=0; lastChunkInfo='нет'; streamInitInfo='не получен';
    const id=session, ms=new MediaSource();
    mediaSource=ms;
    objectUrl=URL.createObjectURL(ms);
@@ -90,6 +90,9 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
        let m;try{m=JSON.parse(event.data);}catch(e){return;}
        if(m.type==='stream-init'){
          const codec=m.codec_string||m.codec||'';
+         // Keep only the init message structure; never display URLs or credentials.
+         const safeInit={}; Object.keys(m).forEach(k=>{if(!/token|auth|url|key|secret/i.test(k))safeInit[k]=m[k];});
+         streamInitInfo=JSON.stringify(safeInit).slice(0,1800);
          if(codec && !codecs.includes(codec))codecs.push(codec);
          setupSource(id,ws,ms);
        }else if(m.type==='error'){
@@ -130,7 +133,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    const e=video.error;
    say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
      '; readyState='+video.readyState+'; networkState='+video.networkState+
-     '; codecs='+codecs.join(',')+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
+     '; codecs='+codecs.join(',')+'; stream-init='+streamInitInfo+'; chunks='+appendCount+'; lastChunk='+lastChunkInfo+'; queued='+queue.length);
  });
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
