@@ -1,7 +1,6 @@
 package com.bladeblack88.ivideonfullscreen
 
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -224,10 +223,6 @@ class MainActivity : AppCompatActivity() {
 
     private inner class PlayerBridge {
         @JavascriptInterface
-        fun openNativePlayer() {
-            runOnUiThread { startActivity(Intent(this@MainActivity, NativePlayerActivity::class.java)) }
-        }
-
         @JavascriptInterface
         fun onStreamClosed() {
             runOnUiThread { scheduleRetry() }
