@@ -1,6 +1,7 @@
 name: Extract Ivideon API documentation
 
 # Extract the checked-in PDF to a short-lived Actions artifact.
+# Re-run by updating this workflow file when documentation review is needed.
 on:
   workflow_dispatch:
   push:
