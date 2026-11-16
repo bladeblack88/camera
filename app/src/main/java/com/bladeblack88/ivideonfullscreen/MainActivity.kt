@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectInPage(url: String) {
         val quoted = com.google.gson.Gson().toJson(url)
-        webView?.evaluateJavascript("window.startIvideonStream($quoted);", null)
+        webView?.evaluateJavascript("window.startIvideonStream($quoted, $currentQuality);", null)
         pendingStreamUrl = null
     }
 
