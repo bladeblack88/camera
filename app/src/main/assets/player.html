@@ -17,57 +17,100 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <script>
 (() => {
  const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound');
- let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=false;
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null;
  function say(s){status.textContent=s;}
- function setupSource(){
-   if(sourceBuffer || !sourceOpen || !codecs.some(c=>c.startsWith('avc1')||c.startsWith('avc3')) || !codecs.some(c=>c.startsWith('mp4a'))) return;
+ function isCurrent(id, ws, ms){
+   return id===session && !stopped && ws===socket && ms===mediaSource;
+ }
+ function hasBuffer(ms, sb){
+   if(!ms || !sb || ms.readyState!=='open') return false;
+   for(let i=0;i<ms.sourceBuffers.length;i++) if(ms.sourceBuffers[i]===sb) return true;
+   return false;
+ }
+ function setupSource(id, ws, ms){
+   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen ||
+      !codecs.some(c=>c.startsWith('avc1')||c.startsWith('avc3')) ||
+      !codecs.some(c=>c.startsWith('mp4a'))) return;
    const mime='video/mp4; codecs="'+codecs.join(',')+'"';
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
    try{
-     sourceBuffer=mediaSource.addSourceBuffer(mime);
-     sourceBuffer.mode='segments';
-     sourceBuffer.addEventListener('updateend',drain);
-     drain();
-   }catch(e){say('Ошибка видеодекодера: '+e.message);}
+     const sb=ms.addSourceBuffer(mime);
+     if(!isCurrent(id,ws,ms)){try{ms.removeSourceBuffer(sb);}catch(e){}return;}
+     sourceBuffer=sb;
+     sb.mode='segments';
+     sb.addEventListener('updateend',()=>{if(isCurrent(id,ws,ms)&&sourceBuffer===sb)drain(id,ws,ms,sb);});
+     drain(id,ws,ms,sb);
+   }catch(e){if(isCurrent(id,ws,ms))say('Ошибка видеодекодера: '+e.message);}
  }
- function drain(){
-   if(!sourceBuffer || sourceBuffer.updating || queue.length===0) return;
-   try{sourceBuffer.appendBuffer(queue.shift());}
-   catch(e){say('Ошибка обработки видеокадра: '+e.message);}
+ function drain(id,ws,ms,sb){
+   if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb) || sb.updating || queue.length===0) return;
+   try{sb.appendBuffer(queue.shift());}
+   catch(e){
+     if(!isCurrent(id,ws,ms) || sourceBuffer!==sb || !hasBuffer(ms,sb)) return;
+     say('Ошибка обработки видеокадра: '+e.message);
+   }
  }
  function start(url){
-   stopped=false; queue=[]; codecs=[]; sourceBuffer=null; sourceOpen=false;
-   if(socket){try{socket.close();}catch(e){}}
-   mediaSource=new MediaSource(); video.src=URL.createObjectURL(mediaSource);
-   mediaSource.addEventListener('sourceopen',()=>{sourceOpen=true;setupSource();});
-   try{socket=new WebSocket(url);socket.binaryType='arraybuffer';}
-   catch(e){say('Не удалось открыть поток: '+e.message);return;}
-   socket.onopen=()=>say('Поток подключён. Получаю видео и звук…');
-   socket.onmessage=(event)=>{
+   // Invalidate the previous connection before closing it: its late events must be ignored.
+   stopped=true; session++;
+   const oldSocket=socket, oldSource=mediaSource, oldUrl=objectUrl;
+   socket=null; mediaSource=null; sourceBuffer=null; queue=[]; codecs=[]; sourceOpen=false;
+   if(oldSocket){try{oldSocket.close();}catch(e){}}
+   if(oldSource && oldSource.readyState==='open'){try{oldSource.endOfStream();}catch(e){}}
+   if(oldUrl){try{URL.revokeObjectURL(oldUrl);}catch(e){}}
+   stopped=false;
+   const id=session, ms=new MediaSource();
+   mediaSource=ms;
+   objectUrl=URL.createObjectURL(ms);
+   video.src=objectUrl;
+   ms.addEventListener('sourceopen',()=>{
+     if(id!==session || stopped || mediaSource!==ms) return;
+     sourceOpen=true; setupSource(id,socket,ms);
+   });
+   let ws;
+   try{ws=new WebSocket(url);ws.binaryType='arraybuffer';socket=ws;}
+   catch(e){if(id===session){say('Не удалось открыть поток: '+e.message);stopped=true;}return;}
+   ws.onopen=()=>{if(isCurrent(id,ws,ms))say('Поток подключён. Получаю видео и звук…');};
+   ws.onmessage=(event)=>{
+     if(!isCurrent(id,ws,ms)) return;
      if(typeof event.data==='string'){
        let m;try{m=JSON.parse(event.data);}catch(e){return;}
        if(m.type==='stream-init'){
-         const c=m.codec_string||m.codec||'';
-         if(c && !codecs.includes(c)) codecs.push(c);
-         setupSource();
-       } else if(m.type==='error'){
+         const codec=m.codec_string||m.codec||'';
+         if(codec && !codecs.includes(codec))codecs.push(codec);
+         setupSource(id,ws,ms);
+       }else if(m.type==='error'){
          say('Ошибка Ivideon: '+(m.value||m.message||'поток недоступен'));
-       } else if(m.type==='metadata' && !sourceBuffer){
-         setupSource();
+       }else if(m.type==='metadata' && !sourceBuffer){
+         setupSource(id,ws,ms);
        }
-     } else if(event.data instanceof ArrayBuffer){
-       queue.push(event.data);setupSource();drain();
-       if(video.paused){video.play().catch(()=>{sound.style.display='block';});}
+     }else if(event.data instanceof ArrayBuffer){
+       if(!isCurrent(id,ws,ms))return;
+       queue.push(event.data);setupSource(id,ws,ms);
+       if(sourceBuffer)drain(id,ws,ms,sourceBuffer);
+       if(video.paused)video.play().catch(()=>{if(isCurrent(id,ws,ms))sound.style.display='block';});
      }
    };
-   socket.onerror=()=>say('Ошибка WebSocket-подключения');
-   socket.onclose=()=>{if(!stopped){say('Поток отключён. Переподключение…');if(window.Android&&Android.onStreamClosed)Android.onStreamClosed();}};
+   ws.onerror=()=>{if(isCurrent(id,ws,ms))say('Ошибка WebSocket-подключения');};
+   ws.onclose=()=>{
+     if(isCurrent(id,ws,ms)){
+       stopped=true;say('Поток отключён. Переподключение…');
+       if(window.Android&&Android.onStreamClosed)Android.onStreamClosed();
+     }
+   };
  }
  sound.addEventListener('click',()=>{video.muted=false;video.play().then(()=>{sound.style.display='none';}).catch(()=>say('Не удалось включить воспроизведение'));});
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
  window.startIvideonStream=start;
- window.stopIvideonStream=()=>{stopped=true;if(socket)socket.close();if(mediaSource&&mediaSource.readyState==='open')mediaSource.endOfStream();};
+ window.stopIvideonStream=()=>{
+   stopped=true;session++;
+   const ws=socket, ms=mediaSource, url=objectUrl;
+   socket=null;mediaSource=null;sourceBuffer=null;queue=[];codecs=[];sourceOpen=false;objectUrl=null;
+   if(ws){try{ws.close();}catch(e){}}
+   if(ms&&ms.readyState==='open'){try{ms.endOfStream();}catch(e){}}
+   if(url){try{URL.revokeObjectURL(url);}catch(e){}}
+ };
 })();
 </script>
 </body>
