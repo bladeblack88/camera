@@ -20,7 +20,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=false;
  function say(s){status.textContent=s;}
  function setupSource(){
-   if(sourceBuffer || !sourceOpen || codecs.length===0) return;
+   if(sourceBuffer || !sourceOpen || !codecs.some(c=>c.startsWith('avc1')||c.startsWith('avc3')) || !codecs.some(c=>c.startsWith('mp4a'))) return;
    const mime='video/mp4; codecs="'+codecs.join(',')+'"';
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
    try{
@@ -61,7 +61,7 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      }
    };
    socket.onerror=()=>say('Ошибка WebSocket-подключения');
-   socket.onclose=()=>{if(!stopped)say('Поток отключён. Переподключение…');};
+   socket.onclose=()=>{if(!stopped){say('Поток отключён. Переподключение…');if(window.Android&&Android.onStreamClosed)Android.onStreamClosed();}};
  }
  sound.addEventListener('click',()=>{video.muted=false;video.play().then(()=>{sound.style.display='none';}).catch(()=>say('Не удалось включить воспроизведение'));});
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
