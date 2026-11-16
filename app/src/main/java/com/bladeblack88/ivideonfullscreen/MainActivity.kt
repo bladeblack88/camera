@@ -223,7 +223,6 @@ class MainActivity : AppCompatActivity() {
 
     private inner class PlayerBridge {
         @JavascriptInterface
-        @JavascriptInterface
         fun onStreamClosed() {
             runOnUiThread { scheduleRetry() }
         }
