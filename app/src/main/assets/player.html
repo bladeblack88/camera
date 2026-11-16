@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>
+html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+#video{width:100%;height:100%;object-fit:contain;background:#000}
+#status{position:absolute;left:0;right:0;bottom:12px;text-align:center;font-size:14px;text-shadow:0 1px 4px #000;padding:8px}
+#sound{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:0;border-radius:8px;padding:14px 20px;background:#222;color:#fff;font-size:16px;display:none}
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline></video>
+<div id="status">Подключение к Ivideon…</div>
+<button id="sound">Включить звук</button>
+<script>
+(() => {
+ const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound');
+ let socket=null, mediaSource=null, sourceBuffer=null, queue=[], codecs=[], sourceOpen=false, stopped=false;
+ function say(s){status.textContent=s;}
+ function setupSource(){
+   if(sourceBuffer || !sourceOpen || codecs.length===0) return;
+   const mime='video/mp4; codecs="'+codecs.join(',')+'"';
+   if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
+   try{
+     sourceBuffer=mediaSource.addSourceBuffer(mime);
+     sourceBuffer.mode='segments';
+     sourceBuffer.addEventListener('updateend',drain);
+     drain();
+   }catch(e){say('Ошибка видеодекодера: '+e.message);}
+ }
+ function drain(){
+   if(!sourceBuffer || sourceBuffer.updating || queue.length===0) return;
+   try{sourceBuffer.appendBuffer(queue.shift());}
+   catch(e){say('Ошибка обработки видеокадра: '+e.message);}
+ }
+ function start(url){
+   stopped=false; queue=[]; codecs=[]; sourceBuffer=null; sourceOpen=false;
+   if(socket){try{socket.close();}catch(e){}}
+   mediaSource=new MediaSource(); video.src=URL.createObjectURL(mediaSource);
+   mediaSource.addEventListener('sourceopen',()=>{sourceOpen=true;setupSource();});
+   try{socket=new WebSocket(url);socket.binaryType='arraybuffer';}
+   catch(e){say('Не удалось открыть поток: '+e.message);return;}
+   socket.onopen=()=>say('Поток подключён. Получаю видео и звук…');
+   socket.onmessage=(event)=>{
+     if(typeof event.data==='string'){
+       let m;try{m=JSON.parse(event.data);}catch(e){return;}
+       if(m.type==='stream-init'){
+         const c=m.codec_string||m.codec||'';
+         if(c && !codecs.includes(c)) codecs.push(c);
+         setupSource();
+       } else if(m.type==='error'){
+         say('Ошибка Ivideon: '+(m.value||m.message||'поток недоступен'));
+       } else if(m.type==='metadata' && !sourceBuffer){
+         setupSource();
+       }
+     } else if(event.data instanceof ArrayBuffer){
+       queue.push(event.data);setupSource();drain();
+       if(video.paused){video.play().catch(()=>{sound.style.display='block';});}
+     }
+   };
+   socket.onerror=()=>say('Ошибка WebSocket-подключения');
+   socket.onclose=()=>{if(!stopped)say('Поток отключён. Переподключение…');};
+ }
+ sound.addEventListener('click',()=>{video.muted=false;video.play().then(()=>{sound.style.display='none';}).catch(()=>say('Не удалось включить воспроизведение'));});
+ video.addEventListener('playing',()=>{say('');sound.style.display='none';});
+ video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
+ window.startIvideonStream=start;
+ window.stopIvideonStream=()=>{stopped=true;if(socket)socket.close();if(mediaSource&&mediaSource.readyState==='open')mediaSource.endOfStream();};
+})();
+</script>
+</body>
+</html>
