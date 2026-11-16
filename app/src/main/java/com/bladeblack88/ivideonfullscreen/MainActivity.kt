@@ -75,13 +75,9 @@ class MainActivity : AppCompatActivity() {
             p.getString("username", "") ?: "",
             p.getString("password", "") ?: ""
         )
-        if (config.clientId.isBlank() || config.clientSecret.isBlank() ||
-            config.username.isBlank() || config.password.isBlank()) {
-            showSetup(config)
-        } else {
-            showPlayer()
-            startLive(config)
-        }
+        // Ask for the Ivideon account credentials on each launch.
+        // OAuth client credentials remain in encrypted local preferences.
+        showSetup(config)
     }
 
     private fun enterImmersive() {
@@ -128,50 +124,41 @@ class MainActivity : AppCompatActivity() {
             layout.addView(edit)
             return edit
         }
-
         layout.addView(TextView(this).apply {
-            text = "Первичная настройка Ivideon"
+            text = "Вход в Ivideon"
             textSize = 22f
             setTextColor(0xFFFFFFFF.toInt())
         })
         layout.addView(TextView(this).apply {
-            text = "Нужны OAuth-реквизиты интеграции Ivideon и данные учётной записи. Они сохраняются в зашифрованном локальном хранилище телефона."
+            text = "Введите логин и пароль от вашей учётной записи Ivideon."
             textSize = 14f
             setTextColor(0xFFB8C4CE.toInt())
             setPadding(0, 8, 0, 8)
         })
-        label("OAuth host")
-        val host = field("https://openapi-alpha.ivideon.com", existing.oauthHost)
-        label("Client ID")
-        val clientId = field("Client ID", existing.clientId)
-        label("Client secret")
-        val clientSecret = field("Client secret", existing.clientSecret, true)
         label("Логин Ivideon (email)")
         val username = field("Email", existing.username)
         label("Пароль Ivideon")
         val password = field("Пароль", existing.password, true)
-
         val save = Button(this).apply {
-            text = "Сохранить и подключиться"
+            text = "Войти и подключиться"
             setOnClickListener {
-                val h = host.text.toString().trim().trimEnd('/')
-                val id = clientId.text.toString().trim()
-                val secret = clientSecret.text.toString()
                 val user = username.text.toString().trim()
                 val pass = password.text.toString()
-                if (h.isBlank() || id.isBlank() || secret.isBlank() || user.isBlank() || pass.isBlank()) {
-                    statusView?.text = "Заполните все поля"
+                if (user.isBlank() || pass.isBlank()) {
+                    return@setOnClickListener
+                }
+                if (existing.clientId.isBlank() || existing.clientSecret.isBlank()) {
+                    android.widget.Toast.makeText(this@MainActivity,
+                        "OAuth-реквизиты интеграции не сохранены на этом телефоне.",
+                        android.widget.Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
                 prefs().edit()
-                    .putString("oauth_host", h)
-                    .putString("client_id", id)
-                    .putString("client_secret", secret)
                     .putString("username", user)
                     .putString("password", pass)
                     .apply()
                 showPlayer()
-                startLive(Config(h, id, secret, user, pass))
+                startLive(Config(existing.oauthHost, existing.clientId, existing.clientSecret, user, pass))
             }
         }
         layout.addView(save)
