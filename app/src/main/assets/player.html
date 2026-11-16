@@ -14,10 +14,13 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
 <video id="video" autoplay playsinline></video>
 <div id="status">Подключение к Ivideon…</div>
 <div id="codecs"></div>
-<button id="native">Тест MediaCodec</button>\n<button id="sound">Включить звук</button>
+<button id="native">Тест MediaCodec</button>
+<button id="sound">Включить звук</button>
 <script>
 (() => {
- const nativeButton=document.getElementById('native');\n nativeButton.addEventListener('click',()=>{if(window.Android&&Android.openNativePlayer)Android.openNativePlayer();});\n const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound'), codecPanel=document.getElementById('codecs');
+ const nativeButton=document.getElementById('native');
+ nativeButton.addEventListener('click',()=>{if(window.Android&&Android.openNativePlayer)Android.openNativePlayer();});
+ const video=document.getElementById('video'), status=document.getElementById('status'), sound=document.getElementById('sound'), codecPanel=document.getElementById('codecs');
  let socket=null, mediaSource=null, sourceBuffer=null, queue=[], history=[], codecs=[], sourceOpen=false, stopped=true, session=0, objectUrl=null, appendCount=0, lastChunkInfo='нет', initChunkInfo='нет', firstMediaChunkInfo='нет', streamInitInfo='не получен', initSegment=null, initQueued=false, fragmentTrackId=null, trackFixInfo='не проверено', selectedCodec='auto', activeMime='не создан';
  function say(s){status.textContent=s;}
  function inspectMp4(data){
