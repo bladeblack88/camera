@@ -45,6 +45,18 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  function readFragmentTrackId(data){
    try{const v=new DataView(data);let p=0;while(p+8<=data.byteLength){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7));if(n<8||p+n>data.byteLength)break;if(t==='moof'){let q=p+8;while(q+8<=p+n){let z=v.getUint32(q),u=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7));if(z<8||q+z>p+n)break;if(u==='traf'){let a=q+8;while(a+8<=q+z){let b=v.getUint32(a),w=String.fromCharCode(v.getUint8(a+4),v.getUint8(a+5),v.getUint8(a+6),v.getUint8(a+7));if(b<8||a+b>q+z)break;if(w==='tfhd'&&b>=16)return v.getUint32(a+12);a+=b;}}q+=z;}}p+=n;}}catch(e){}return null;
  }
+ function codecFromInit(buffer){
+   try{
+     const bytes=new Uint8Array(buffer);
+     for(let i=4;i+8<bytes.length;i++){
+       if(bytes[i]===0x61&&bytes[i+1]===0x76&&bytes[i+2]===0x63&&bytes[i+3]===0x43){
+         const profile=bytes[i+5],compat=bytes[i+6],level=bytes[i+7];
+         return 'avc1.'+[profile,compat,level].map(x=>x.toString(16).padStart(2,'0')).join('');
+       }
+     }
+   }catch(e){}
+   return null;
+ }
  function alignInitTrackId(buffer,targetId){
    const v=new DataView(buffer),found=[],containers=['moov','trak','mdia','minf','stbl','mvex','edts','dinf'];
    function walk(start,end){let p=start;while(p+8<=end){let n=v.getUint32(p),t=String.fromCharCode(v.getUint8(p+4),v.getUint8(p+5),v.getUint8(p+6),v.getUint8(p+7)),h=8;if(n===1){if(p+16>end)break;n=v.getUint32(p+8)*4294967296+v.getUint32(p+12);h=16;}else if(n===0)n=end-p;if(n<h||p+n>end)break;if(t==='tkhd'&&n>=24){const ver=v.getUint8(p+h),o=p+(ver===1?28:20);if(o+4<=p+n){found.push('tkhd:'+v.getUint32(o));v.setUint32(o,targetId);}}else if(t==='trex'&&n>=16){found.push('trex:'+v.getUint32(p+12));v.setUint32(p+12,targetId);}if(containers.includes(t))walk(p+h,p+n);p+=n;}}
@@ -61,7 +73,10 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
  function setupSource(id, ws, ms){
    if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment || fragmentTrackId===null) return;
    // The supplied Ivideon init segment currently describes a video (vide) track only.
-   const videoCodecs=codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'));
+   // The stream-init codec string can disagree with the actual avcC configuration.
+   // MSE must be told the profile/compatibility/level declared by the init segment.
+   const initCodec=codecFromInit(initSegment);
+   const videoCodecs=initCodec?[initCodec]:codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'));
    if(!videoCodecs.length) return;
    const mime='video/mp4; codecs="'+videoCodecs.join(',')+'"';
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
