@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:allowBackup="false"
-        android:label="Ivideon Camera"
+        android:label="Входная дверь"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
         <activity
