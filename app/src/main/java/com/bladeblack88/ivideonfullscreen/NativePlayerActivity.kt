@@ -64,28 +64,22 @@ class NativePlayerActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.decorView.systemUiVisibility = (
+            android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        )
+        supportActionBar?.hide()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xff000000.toInt())
         }
-        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val c2 = Button(this).apply { text = "c2.mtk AVC" }
-        val omx = Button(this).apply { text = "OMX.MTK AVC" }
-        c2.setOnClickListener { chooseDecoder("c2.mtk.avc.decoder") }
-        omx.setOnClickListener { chooseDecoder("OMX.MTK.VIDEO.DECODER.AVC") }
-        controls.addView(c2, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        controls.addView(omx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(controls)
-        status = TextView(this).apply {
-            setTextColor(0xffffffff.toInt())
-            textSize = 13f
-            text = "Нативный MediaCodec: подключение…"
-            setPadding(10, 8, 10, 8)
-        }
-        root.addView(status)
         surfaceView = SurfaceView(this)
         root.addView(surfaceView, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
         setContentView(root)
         surfaceView?.holder?.addCallback(object : android.view.SurfaceHolder.Callback {
