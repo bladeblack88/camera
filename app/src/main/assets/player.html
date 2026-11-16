@@ -99,7 +99,25 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
      }
    };
  }
- sound.addEventListener('click',()=>{video.muted=false;video.play().then(()=>{sound.style.display='none';}).catch(()=>say('Не удалось включить воспроизведение'));});
+ sound.addEventListener('click',()=>{
+   video.muted=false;
+   video.play().then(()=>{sound.style.display='none';})
+     .catch(e=>{
+       const media=video.error ? ' mediaError='+video.error.code+(video.error.message?' '+video.error.message:'') : '';
+       const details='Воспроизведение: '+(e.name||'Error')+': '+(e.message||'без подробностей')+
+         '; readyState='+video.readyState+'; networkState='+video.networkState+
+         '; MediaSource='+(mediaSource?mediaSource.readyState:'нет')+
+         '; SourceBuffer='+(sourceBuffer?'есть':'нет')+media;
+       say(details);
+       sound.textContent='Повторить';
+       sound.style.display='block';
+     });
+ });
+ video.addEventListener('error',()=>{
+   const e=video.error;
+   say('Ошибка видео: '+(e?('код '+e.code+' '+(e.message||'')):'неизвестно')+
+     '; readyState='+video.readyState+'; networkState='+video.networkState);
+ });
  video.addEventListener('playing',()=>{say('');sound.style.display='none';});
  video.addEventListener('waiting',()=>{if(!sourceBuffer)say('Ожидание видеопотока…');});
  window.startIvideonStream=start;
