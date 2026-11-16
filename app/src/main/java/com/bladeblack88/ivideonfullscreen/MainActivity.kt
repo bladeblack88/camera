@@ -26,6 +26,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
@@ -39,6 +40,12 @@ class MainActivity : AppCompatActivity() {
         private const val RETRY_MS = 7000L
         private const val PREVIEW_FPS = 5
         private const val PREVIEW_QUALITY = 2
+        private val AUTH_MODES = listOf(
+            "Bearer в заголовках API и WebSocket",
+            "Bearer API + access_token в WebSocket URL",
+            "access_token в API URL + Bearer WebSocket",
+            "access_token в обоих URL"
+        )
     }
 
     private val http = OkHttpClient.Builder()
@@ -57,6 +64,8 @@ class MainActivity : AppCompatActivity() {
     private var previewSocket: WebSocket? = null
     private var lastError = "Пока ошибок нет."
     private var stopping = false
+    private var authModeIndex = 0
+    private var modeButton: Button? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +110,15 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFFFFFFFF.toInt())
             setPadding(8, 8, 8, 8)
         }
+        modeButton = Button(this).apply {
+            text = "Способ 1/4: ${AUTH_MODES[authModeIndex]}"
+            isAllCaps = false
+            setOnClickListener {
+                authModeIndex = (authModeIndex + 1) % AUTH_MODES.size
+                text = "Способ ${authModeIndex + 1}/${AUTH_MODES.size}: ${AUTH_MODES[authModeIndex]}"
+                startPreview()
+            }
+        }
         val copyButton = Button(this).apply {
             text = "Скопировать ошибку"
             isAllCaps = false
@@ -115,7 +133,7 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        root.addView(copyButton, LinearLayout.LayoutParams(
+        root.addView(modeButton, LinearLayout.LayoutParams(\n            LinearLayout.LayoutParams.MATCH_PARENT,\n            LinearLayout.LayoutParams.WRAP_CONTENT\n        ))\n        root.addView(copyButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -138,10 +156,19 @@ class MainActivity : AppCompatActivity() {
             statusView?.text = "Запрос предпросмотра Ivideon…"
             try {
                 val wsUrl = withContext(Dispatchers.IO) { requestPreviewUrl() }
-                val socketRequest = Request.Builder()
-                    .url(wsUrl)
-                    .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
-                    .build()
+                val socketUrl = wsUrl.toHttpUrlOrNull()
+                    ?: error("Некорректный WebSocket URL от Ivideon")
+                val useWsQueryToken = authModeIndex == 1 || authModeIndex == 3
+                val finalSocketUrl = if (useWsQueryToken) {
+                    socketUrl.newBuilder()
+                        .addQueryParameter("access_token", BuildConfig.IVIDEON_API_KEY)
+                        .build()
+                } else socketUrl
+                val socketBuilder = Request.Builder().url(finalSocketUrl)
+                if (!useWsQueryToken) {
+                    socketBuilder.header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+                }
+                val socketRequest = socketBuilder.build()
                 statusView?.text = "Подключение к потоку изображений…"
                 previewSocket = wsClient.newWebSocket(socketRequest, object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -199,13 +226,21 @@ class MainActivity : AppCompatActivity() {
         val cameraPath = Uri.encode(CAMERA_ID)
         val body = """{"fps":$PREVIEW_FPS,"q":$PREVIEW_QUALITY}"""
             .toRequestBody("application/json; charset=utf-8".toMediaType())
-        val request = Request.Builder()
-            .url("$API_BASE/cameras/$cameraPath/live_preview?op=STREAM")
-            .header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+        val useApiQueryToken = authModeIndex == 2 || authModeIndex == 3
+        val apiUrlBuilder = "$API_BASE/cameras/$cameraPath/live_preview".toHttpUrlOrNull()?.newBuilder()
+            ?: error("Некорректный адрес Ivideon API")
+        apiUrlBuilder.addQueryParameter("op", "STREAM")
+        if (useApiQueryToken) {
+            apiUrlBuilder.addQueryParameter("access_token", BuildConfig.IVIDEON_API_KEY)
+        }
+        val requestBuilder = Request.Builder()
+            .url(apiUrlBuilder.build())
             .header("Accept", "application/json")
             .header("Cache-Control", "no-cache")
-            .post(body)
-            .build()
+        if (!useApiQueryToken) {
+            requestBuilder.header("Authorization", "Bearer ${BuildConfig.IVIDEON_API_KEY}")
+        }
+        val request = requestBuilder.post(body).build()
 
         return http.newCall(request).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
