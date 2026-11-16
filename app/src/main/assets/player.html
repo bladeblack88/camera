@@ -26,12 +26,12 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
        let q=start, items=[];
        while(q+8<=end && items.length<16){
          let size=v.getUint32(q), type=String.fromCharCode(v.getUint8(q+4),v.getUint8(q+5),v.getUint8(q+6),v.getUint8(q+7)), h=8;
-         if(size===1){if(q+16>end)break;size=Number(v.getBigUint64(q+8));h=16;}else if(size===0)size=end-q;
+         if(size===1){if(q+16>end)break;size=v.getUint32(q+8)*4294967296+v.getUint32(q+12);h=16;}else if(size===0)size=end-q;
          if(size<h || q+size>end){items.push(type+':BAD('+size+')');break;}
          let detail='';
          if(type==='mfhd' && size>=16) detail=' seq='+v.getUint32(q+12);
          if(type==='tfhd' && size>=16) detail=' track='+v.getUint32(q+12)+' flags=0x'+v.getUint32(q+8).toString(16).slice(2);
-         if(type==='tfdt' && size>=16){const ver=v.getUint8(q+8);detail=' decodeTime='+(ver===1&&size>=20?v.getBigUint32(q+12)*4294967296+v.getUint32(q+16):v.getUint32(q+12));}
+         if(type==='tfdt' && size>=16){const ver=v.getUint8(q+8);detail=' decodeTime='+(ver===1&&size>=20?v.getUint32(q+12)*4294967296+v.getUint32(q+16):v.getUint32(q+12));}
          if(type==='trun' && size>=16){const flags=v.getUint32(q+8)&0xffffff;detail=' samples='+v.getUint32(q+12)+' flags=0x'+flags.toString(16);}
          items.push(type+':'+size+detail);
          if(['moof','traf'].includes(type)) items[items.length-1]+='{'+readBoxes(q+h,q+size,depth+1).join(',')+'}';
