@@ -803,4 +803,3 @@ class NativePlayerActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
-}
