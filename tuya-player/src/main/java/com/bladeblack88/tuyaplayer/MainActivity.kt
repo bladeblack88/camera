@@ -98,14 +98,20 @@ class MainActivity : AppCompatActivity() {
                     ?: throw IllegalStateException("Не найден адрес ONVIF Media service")
                 val profilesXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
                     """<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>""")
-                val profile = findElement(profilesXml, "Profiles")
-                    ?: throw IllegalStateException("Камера не вернула ни одного видеопрофиля")
+                val profileNodes = profilesXml.getElementsByTagNameNS("*", "Profiles")
+                val profile = (0 until profileNodes.length)
+                    .mapNotNull { profileNodes.item(it) as? Element }
+                    .firstOrNull { it.getElementsByTagNameNS("*", "VideoEncoderConfiguration").length > 0 }
+                    ?: throw IllegalStateException("ONVIF не вернул профиль с VideoEncoderConfiguration. Получен только аудиопрофиль или камера не публикует видео через ONVIF.")
                 val token = profile.getAttribute("token").takeIf { it.isNotBlank() }
                     ?: throw IllegalStateException("У видеопрофиля отсутствует token")
                 val uriXml = soap(mediaXAddr, "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
                     """<trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>$token</trt:ProfileToken></trt:GetStreamUri>""")
                 val rawUri = findElement(uriXml, "Uri")?.textContent?.trim()
                     ?: throw IllegalStateException("Камера не вернула RTSP URI")
+                if (rawUri.contains("liveaudio", ignoreCase = true)) {
+                    throw IllegalStateException("Камера снова вернула аудиопоток liveaudio, а не видео. ONVIF Media у этой камеры настроен некорректно.")
+                }
                 val finalUri = addCredentials(rawUri)
                 runOnUiThread {
                     urlInput.setText(finalUri)
