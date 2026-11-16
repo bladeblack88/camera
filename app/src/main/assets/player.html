@@ -39,10 +39,11 @@ html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family
    return false;
  }
  function setupSource(id, ws, ms){
-   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment ||
-      !codecs.some(c=>c.startsWith('avc1')||c.startsWith('avc3')) ||
-      !codecs.some(c=>c.startsWith('mp4a'))) return;
-   const mime='video/mp4; codecs="'+codecs.join(',')+'"';
+   if(!isCurrent(id,ws,ms) || sourceBuffer || !sourceOpen || !initSegment) return;
+   // The supplied Ivideon init segment currently describes a video (vide) track only.
+   const videoCodecs=codecs.filter(c=>c.startsWith('avc1')||c.startsWith('avc3'));
+   if(!videoCodecs.length) return;
+   const mime='video/mp4; codecs="'+videoCodecs.join(',')+'"';
    if(!MediaSource.isTypeSupported(mime)){say('Формат потока не поддерживается: '+mime);return;}
    try{
      const sb=ms.addSourceBuffer(mime);
