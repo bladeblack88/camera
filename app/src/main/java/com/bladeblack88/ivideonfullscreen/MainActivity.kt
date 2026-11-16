@@ -39,7 +39,7 @@ class MainActivity : AppCompatActivity() {
         private const val API_BASE = "https://openapi-alpha-eu01.ivideon.com"
         private const val RETRY_MS = 7000L
         private const val PREVIEW_FPS = 5
-        private const val PREVIEW_QUALITY = 2
+        private const val PREVIEW_QUALITY = 1
         private val AUTH_MODES = listOf(
             "Bearer в заголовках API и WebSocket",
             "Bearer API + access_token в WebSocket URL",
@@ -365,7 +365,7 @@ class MainActivity : AppCompatActivity() {
                     } catch (e: Exception) {
                         statusView?.text = "Ошибка связи: " + (e.message ?: "нет ответа")
                     }
-                    delay(1000L)
+                    delay(300L)
                 }
             } catch (e: Exception) {
                 showError("Не удалось подключиться к Ivideon: " + (e.message ?: "нет ответа API"))
